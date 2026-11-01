@@ -34,6 +34,7 @@ import {
   type FinalizedCharacterContext,
   type FinalizedSourceIdentity,
 } from '../../../shared/finalized-continuity'
+import { chapterCharacterStatePromptCards } from '../../../shared/chapter-character-state-snapshot'
 import { readWorkflowDraftMeta } from '../workflow-draft-meta'
 import {
   requireWorkflowProjectSession,
@@ -283,10 +284,15 @@ export function buildFinalizePostProcessSteps(
       const prepared = await ipc.invokeWithProjectSession(projectSession, 'finalized-character:read-context', { draftId: finalizedDraftId })
       if (prepared.context.source.finalizationId !== finalizedSource.finalizationId || prepared.context.source.contentHash !== finalizedSource.contentHash
         || prepared.context.source.chapterNumber !== chapterNumber || prepared.context.content !== draftContent) throw new Error('FINALIZED_CHARACTER_SOURCE_CHANGED')
+      if (prepared.context.identityStatus === 'bound' && prepared.characterStateBaseline === null) {
+        throw new Error('GENERATION_FINALIZATION_PREDECESSOR_REQUIRED')
+      }
       const writingLanguage = workflowWritingLanguage(context)
       const template = await resolvePromptTemplate('update_character_cards', projectSession, writingLanguage)
       if (!template) throw new Error('FINALIZED_CHARACTER_TEMPLATE_REQUIRED')
-      const cards = finalizedCharacterPromptCards(prepared.context, prepared.originProjectId)
+      const cards = prepared.characterStateBaseline
+        ? chapterCharacterStatePromptCards(prepared.characterStateBaseline)
+        : finalizedCharacterPromptCards(prepared.context, prepared.originProjectId)
       const base = new PostProcessPromptBuilder(template, writingLanguage)
         .withChapterContent(prepared.context.content).withChapterNumber(chapterNumber).withExistingCardsJson(cards)
       const contract = writingLanguage === 'en-US'

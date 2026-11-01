@@ -69,23 +69,27 @@ async function invoke<T = unknown>(channel: string, ...args: unknown[]): Promise
 }
 
 function stream(content: string) {
-  const fetch = vi.fn(async () => ({
-    ok: true,
-    body: new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`))
-        controller.close()
-      },
-    }),
-  }))
+  const fetch = vi.fn(async (url: unknown, init?: { body?: string }) => {
+    void url
+    void init
+    return {
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`))
+          controller.close()
+        },
+      }),
+    }
+  })
   vi.stubGlobal('fetch', fetch)
   return fetch
 }
 
-function seedDraft(id = 1, version = 1, content = prose) {
-  getProjectDb()!.prepare('INSERT INTO blueprints(chapter_number,title) VALUES(1,?)').run('北塔')
+function seedDraft(id = 1, version = 1, content = prose, chapterNumber = 1, chapterTitle = '北塔') {
+  getProjectDb()!.prepare('INSERT INTO blueprints(chapter_number,title) VALUES(?,?)').run(chapterNumber, chapterTitle)
   getProjectDb()!.prepare('INSERT INTO contents(id,body) VALUES(?,?)').run(id, content)
-  getProjectDb()!.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id,word_count) VALUES(?,1,?,'draft',?,12)").run(id, version, id)
+  getProjectDb()!.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id,word_count) VALUES(?,?,?,'draft',?,12)").run(id, chapterNumber, version, id)
 }
 
 function seedCharacter(characterId: string, name: string, fields: Record<string, string>, provenance: Record<string, unknown>) {
@@ -99,14 +103,14 @@ function seedCharacter(characterId: string, name: string, fields: Record<string,
     .run(characterId, name, 'seed')
 }
 
-async function finalize(draftId = 1, content = prose, contentRevision = 1) {
+async function finalize(draftId = 1, content = prose, contentRevision = 1, chapterNumber = 1, chapterTitle = '北塔') {
   return await invoke<FinalizationResult>('finalization:commit', {
     tabId: `draft:${draftId}`,
     projectPath: session.projectPath,
     projectSession: { ...session },
     draftId,
-    chapterNumber: 1,
-    chapterTitle: '北塔',
+    chapterNumber,
+    chapterTitle,
     content,
     contentRevision,
   })
@@ -235,6 +239,159 @@ describe('first chapter character-state snapshot through real finalization and g
     })).rejects.toThrow('GENERATION_PROJECT_SESSION_STALE')
   })
 
+  it('inherits the nearest earlier valid snapshot with its original field provenance and evidence', async () => {
+    const firstProse = '林岚在北塔受伤。'
+    const secondProse = '林岚抵达南桥。'
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedDraft(1, 1, firstProse)
+    seedDraft(2, 1, secondProse, 2, '南桥')
+    await finalize(1, firstProse)
+    const firstExtraction = await extractedCommit(1, [{
+      characterId: 'character-lin',
+      currentState: { physicalState: '受伤' },
+      evidence: { start: 0, end: firstProse.length, text: firstProse },
+    }])
+    await invoke('finalization-generation:commit', firstExtraction.request)
+    const [first] = await listSnapshots('character-lin')
+
+    await finalize(2, secondProse, 1, 2, '南桥')
+    const secondExtraction = await extractedCommit(2, [{
+      characterId: 'character-lin',
+      currentState: { location: '南桥' },
+      evidence: { start: 0, end: secondProse.length, text: secondProse },
+    }])
+    await invoke('finalization-generation:commit', secondExtraction.request)
+    const summaries = await listSnapshots('character-lin')
+    const second = summaries.find(item => (item.source as { chapterNumber: number }).chapterNumber === 2)!
+
+    expect(first).toMatchObject({
+      baseline: { kind: 'roster', predecessor: null },
+      continuityGeneration: 0,
+    })
+    expect(second).toMatchObject({
+      baseline: {
+        kind: 'snapshot',
+        predecessor: {
+          snapshotId: first!.snapshotId,
+          snapshotHash: first!.snapshotHash,
+          source: { chapterNumber: 1, finalizationId: firstExtraction.source.finalizationId },
+        },
+      },
+      continuityGeneration: 0,
+    })
+    for (const summary of [first!, second]) expect(summary.inputHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(second.inputHash).not.toBe(first!.inputHash)
+
+    const firstDetail = await readSnapshot(first!.snapshotId as string, 'character-lin')
+    const secondDetail = await readSnapshot(second.snapshotId as string, 'character-lin')
+    const inherited = (detail: Record<string, unknown>) => (detail.character as { fields: Array<Record<string, unknown>> }).fields
+      .find(field => field.field === 'physicalState')
+    expect(inherited(secondDetail)).toEqual(inherited(firstDetail))
+    expect(inherited(secondDetail)).toMatchObject({
+      value: '受伤',
+      knownAtChapter: 1,
+      provenance: { kind: 'derived', source: { chapterNumber: 1, finalizationId: firstExtraction.source.finalizationId } },
+      evidence: { start: 0, end: firstProse.length, text: firstProse },
+    })
+  })
+
+  it('freezes an out-of-order chapter baseline before extraction without future or unfinalized values', async () => {
+    const firstProse = '第一章：林岚在北塔受伤。'
+    const secondProse = '第二章：林岚练习控火。'
+    const thirdProse = '第三章：林岚带着未来物品抵达南桥。'
+    seedCharacter('character-lin', '林岚', { mentalState: '未来心理' }, {
+      mentalState: { kind: 'author', chapterNumber: 3, revision: 1 },
+    })
+    seedDraft(1, 1, firstProse)
+    seedDraft(2, 1, secondProse, 2, '练习')
+    seedDraft(3, 1, thirdProse, 3, '南桥')
+    getProjectDb()!.prepare('UPDATE blueprints SET characters=? WHERE chapter_number=2').run(JSON.stringify(['未来细纲人物']))
+    await finalize(1, firstProse)
+    const first = await extractedCommit(1, [{
+      characterId: 'character-lin', currentState: { physicalState: '第一章伤势' },
+      evidence: { start: 0, end: firstProse.length, text: firstProse },
+    }])
+    await invoke('finalization-generation:commit', first.request)
+
+    await finalize(3, thirdProse, 1, 3, '南桥')
+    const third = await extractedCommit(3, [{
+      characterId: 'character-lin', currentState: { physicalState: '第三章状态', keyItems: '未来物品' },
+      evidence: { start: 0, end: thirdProse.length, text: thirdProse },
+    }])
+    await invoke('finalization-generation:commit', third.request)
+    const [firstSummary] = await listSnapshots('character-lin')
+
+    await finalize(2, secondProse, 1, 2, '练习')
+    const prepared = await invoke<{ characterStateBaseline?: {
+      characters: Array<{ fields: Array<{ field: string; value: string }> }>
+    } }>('finalized-character:read-context', { draftId: 2 })
+    const preparedFields = prepared.characterStateBaseline?.characters[0]?.fields
+    expect(preparedFields?.find(field => field.field === 'physicalState')?.value).toBe('第一章伤势')
+    expect(preparedFields?.find(field => field.field === 'keyItems')?.value).toBe('')
+    const second = await extractedCommit(2, [{
+      characterId: 'character-lin', currentState: { powerLevel: '第二章能力' },
+      evidence: { start: 0, end: secondProse.length, text: secondProse },
+    }])
+    const requestBody = String((second.fetch.mock.calls[0]![1] as { body: string }).body)
+    expect(requestBody).toContain('第一章伤势')
+    expect(requestBody).not.toContain('第三章状态')
+    expect(requestBody).not.toContain('未来物品')
+    expect(requestBody).not.toContain('未来心理')
+    expect(requestBody).not.toContain('未来细纲人物')
+    await invoke('finalization-generation:commit', second.request)
+
+    const summaries = await listSnapshots('character-lin')
+    const secondSummary = summaries.find(item => (item.source as { chapterNumber: number }).chapterNumber === 2)!
+    expect(secondSummary.baseline).toMatchObject({
+      kind: 'snapshot', predecessor: { snapshotId: firstSummary!.snapshotId, source: { chapterNumber: 1 } },
+    })
+    const detail = await readSnapshot(secondSummary.snapshotId as string, 'character-lin')
+    const fields = Object.fromEntries((detail.character as { fields: Array<Record<string, unknown>> }).fields.map(field => [field.field, field]))
+    expect(fields).toMatchObject({
+      physicalState: { value: '第一章伤势', knownAtChapter: 1 },
+      keyItems: { value: '', knownAtChapter: null },
+      mentalState: { value: '', knownAtChapter: null },
+      powerLevel: { value: '第二章能力', knownAtChapter: 2 },
+    })
+  })
+
+  it('reports a predecessor gap without dispatching or rolling back the later finalization', async () => {
+    const firstProse = '第一章已经定稿。'
+    const secondProse = '第二章也已经定稿。'
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedDraft(1, 1, firstProse)
+    seedDraft(2, 1, secondProse, 2, '后续')
+    await finalize(1, firstProse)
+    await finalize(2, secondProse, 1, 2, '后续')
+    const source = getProjectDb()!.prepare(`SELECT d.id AS draftId,o.finalization_id AS finalizationId,
+      d.chapter_number AS chapterNumber,o.content_hash AS contentHash FROM drafts d
+      JOIN finalization_outbox o ON o.draft_id=d.id WHERE d.id=2`).get()
+    const fetch = stream(JSON.stringify({ updates: [] }))
+
+    await expect(invoke('finalization-generation:begin', {
+      slot: { source, stepKey: 'character_cards' }, modelId: model.id,
+    })).rejects.toThrow('GENERATION_FINALIZATION_PREDECESSOR_REQUIRED')
+    expect(fetch).not.toHaveBeenCalled()
+    await expect(invoke('finalized-character:read-state-continuity')).resolves.toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 1 }), status: 'missing-snapshot' }),
+      expect.objectContaining({
+        source: expect.objectContaining({ chapterNumber: 2 }),
+        status: 'waiting-predecessor',
+        predecessorGapChapterNumber: 1,
+      }),
+    ])
+    expect(await invoke('db:draft-get-full', 2, session.projectPath)).toMatchObject({ id: 2, status: 'finalized', content: secondProse })
+
+    const first = await extractedCommit(1, [])
+    await invoke('finalization-generation:commit', first.request)
+    expect(first.fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).not.toHaveBeenCalled()
+    await expect(invoke('finalized-character:read-state-continuity')).resolves.toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 1 }), status: 'valid' }),
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 2 }), status: 'missing-snapshot' }),
+    ])
+  })
+
   it('keeps finalization committed after snapshot storage fails and retries the same artifact without duplicate history', async () => {
     seedDraft()
     seedCharacter('character-lin', '林岚', {}, {})
@@ -288,7 +445,7 @@ describe('first chapter character-state snapshot through real finalization and g
     const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3')
     const restored = new Database(path.join(restoredRoot, '.ai-novel', 'project.db'), { readonly: true })
     try {
-      expect(restored.pragma('user_version', { simple: true })).toBe(8)
+      expect(restored.pragma('user_version', { simple: true })).toBe(9)
       const restoredSummaries = ChapterCharacterStateSnapshotRepository.listForCharacter(restored, 'character-lin')
       expect(restoredSummaries).toEqual([summary])
       const detail = ChapterCharacterStateSnapshotRepository.readForCharacter(restored, summary!.snapshotId as string, 'character-lin')

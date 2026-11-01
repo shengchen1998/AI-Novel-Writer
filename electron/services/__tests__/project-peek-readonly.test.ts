@@ -45,8 +45,8 @@ function fixture(options: { schemaVersion?: number; journalMode?: 'delete' | 'wa
   handles.push(database)
   database.pragma('foreign_keys = ON')
   initializeLegacyBaselineSchema(database)
-  migrateSchema(new SqliteSchemaAdapter(database), getDesktopMigrationRegistry(), options.schemaVersion ?? 8)
-  if ((options.schemaVersion ?? 8) >= 7) seedCore(database)
+  migrateSchema(new SqliteSchemaAdapter(database), getDesktopMigrationRegistry(), options.schemaVersion ?? 9)
+  if ((options.schemaVersion ?? 9) >= 7) seedCore(database)
   if (options.journalMode === 'wal') database.pragma('journal_mode = WAL')
   return { root, storage, scratch, projectId, databasePath, database }
 }
@@ -176,7 +176,7 @@ describe('ProjectPeekService source-zero-write overview', { timeout: 20_000 }, (
 
     const old = fixture({ schemaVersion: 5 })
     const future = fixture()
-    future.database.pragma('user_version = 9')
+    future.database.pragma('user_version = 10')
     const fork = fixture()
     fork.database.exec('CREATE TABLE unrecognized_fork (id INTEGER PRIMARY KEY)')
     for (const candidate of [old, future, fork]) {

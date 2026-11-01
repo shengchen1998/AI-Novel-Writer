@@ -3,6 +3,7 @@ import type { FinalizedCharacterContext, FinalizedSourceIdentity } from './final
 import type { FinalizedCharacterArtifact, FinalizedCharacterGenerationReceipt } from './finalized-character-generation'
 import type { PromptTemplate } from '../services/builtin-prompt-templates'
 import type { WritingLanguage } from './writing-language'
+import type { ChapterCharacterStateSnapshotBaseline } from './chapter-character-state-snapshot'
 
 export interface FinalizationGenerationSlot {
   source: FinalizedSourceIdentity
@@ -11,6 +12,7 @@ export interface FinalizationGenerationSlot {
 export interface FinalizationGenerationContext {
   slot: FinalizationGenerationSlot
   identity: FinalizedCharacterContext
+  characterStateBaseline?: ChapterCharacterStateSnapshotBaseline
   chapterTitle: string
   chapterEntities: string[]
   writingLanguage: WritingLanguage

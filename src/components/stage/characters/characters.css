@@ -573,6 +573,21 @@
   font-size: var(--fs-13);
 }
 
+.cast-continuity {
+  display: grid;
+  gap: var(--s-2);
+  margin-bottom: var(--s-4);
+  padding: var(--s-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+}
+
+.cast-continuity > div {
+  display: grid;
+  gap: var(--s-1);
+}
+
 .cast-history-source {
   margin-bottom: var(--s-4);
   padding: var(--s-3);

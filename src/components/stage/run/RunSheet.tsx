@@ -12,6 +12,7 @@ import { Sheet } from '../../ui/Sheet'
 import { RunCard, RunDetails } from './RunCard'
 import { RunDiagnostics } from './RunDiagnostics'
 import { RunRecoveryList } from './RunRecoveryList'
+import CharacterStateContinuity from '../characters/CharacterStateContinuity'
 import { clockTime } from './run-format'
 
 type Text = (zh: string, en: string) => string
@@ -75,17 +76,21 @@ function ActiveRuns({ runs, last, recovery, focusRunId, hasHistory, text }: {
   const nothing = ordered.length === 0 && !showLast && !recovery.entries.length && !recovery.generationError && !recovery.candidateError
   if (nothing) {
     return (
-      <EmptyState
-        heading={text('没有进行中的运行', 'Nothing is running')}
-        description={text('写作此章、AI 审稿等操作开始后，步骤与实时输出会出现在这里。', 'When you write a chapter or run an AI review, its steps and live output appear here.')}
-        action={hasHistory
-          ? <Button variant="secondary" size="sm" onClick={() => useStageStore.setState({ sheet: { kind: 'run', tab: 'history' } })}>{text('查看历史', 'View history')}</Button>
-          : <Button variant="text" size="sm" onClick={close}>{text('收起运行侧页', 'Close run sheet')}</Button>}
-      />
+      <>
+        <CharacterStateContinuity />
+        <EmptyState
+          heading={text('没有进行中的运行', 'Nothing is running')}
+          description={text('写作此章、AI 审稿等操作开始后，步骤与实时输出会出现在这里。', 'When you write a chapter or run an AI review, its steps and live output appear here.')}
+          action={hasHistory
+            ? <Button variant="secondary" size="sm" onClick={() => useStageStore.setState({ sheet: { kind: 'run', tab: 'history' } })}>{text('查看历史', 'View history')}</Button>
+            : <Button variant="text" size="sm" onClick={close}>{text('收起运行侧页', 'Close run sheet')}</Button>}
+        />
+      </>
     )
   }
   return (
     <div className="run-list">
+      <CharacterStateContinuity />
       {ordered.map(run => <RunCard key={run.id} run={run} focused={run.id === focusRunId} primary={run.id === primaryId} />)}
       {showLast && <RunCard run={last} caption={text('上一次运行', 'Last run')} primary />}
       <RunRecoveryList recovery={recovery} liveRuns={runs} />

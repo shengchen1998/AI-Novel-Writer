@@ -3,8 +3,10 @@ import { isDeepStrictEqual } from 'node:util'
 import type Database from 'better-sqlite3'
 import {
   CHAPTER_CHARACTER_STATE_SNAPSHOT_SCHEMA_VERSION,
+  type ChapterCharacterStateSnapshotBaseline,
   type ChapterCharacterStateSnapshotCharacter,
   type ChapterCharacterStateSnapshotCharacterSummary,
+  type ChapterCharacterStateContinuityEntry,
   type ChapterCharacterStateSnapshotDetail,
   type ChapterCharacterStateSnapshotField,
   type ChapterCharacterStateSnapshotSummary,
@@ -22,6 +24,9 @@ interface SnapshotPayload {
   source: FinalizedSourceIdentity
   chapterTitle: string
   characters: ChapterCharacterStateSnapshotCharacter[]
+  baseline?: ChapterCharacterStateSnapshotSummary['baseline']
+  inputHash?: string
+  continuityGeneration?: number
 }
 
 interface SnapshotRow {
@@ -34,6 +39,10 @@ interface SnapshotRow {
   content_hash: string
   snapshot_hash: string
   created_at: string
+  predecessor_snapshot_id: string | null
+  predecessor_hash: string | null
+  input_hash: string | null
+  continuity_generation: number | null
 }
 
 interface CharacterRow {
@@ -76,13 +85,35 @@ function characterSummary(row: CharacterRow): ChapterCharacterStateSnapshotChara
   }
 }
 
-function summaryFromRows(row: SnapshotRow & CharacterRow): ChapterCharacterStateSnapshotSummary {
+function readSnapshotRow(db: Database.Database, snapshotId: string): SnapshotRow | undefined {
+  return db.prepare('SELECT * FROM chapter_character_state_snapshots WHERE snapshot_id=?').get(snapshotId) as SnapshotRow | undefined
+}
+
+function baselineFromRow(db: Database.Database, row: SnapshotRow): ChapterCharacterStateSnapshotSummary['baseline'] {
+  const predecessorRow = row.predecessor_snapshot_id ? readSnapshotRow(db, row.predecessor_snapshot_id) : undefined
+  if (row.predecessor_snapshot_id && (!predecessorRow || predecessorRow.snapshot_hash !== row.predecessor_hash)) {
+    throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_PREDECESSOR_INVALID')
+  }
+  return {
+    kind: predecessorRow ? 'snapshot' : 'roster',
+    predecessor: predecessorRow ? {
+      snapshotId: predecessorRow.snapshot_id,
+      snapshotHash: predecessorRow.snapshot_hash,
+      source: sourceFromRow(predecessorRow),
+    } : null,
+  }
+}
+
+function summaryFromRows(db: Database.Database, row: SnapshotRow & CharacterRow): ChapterCharacterStateSnapshotSummary {
   return {
     snapshotId: row.snapshot_id,
     source: sourceFromRow(row),
     chapterTitle: row.chapter_title,
     snapshotHash: row.snapshot_hash,
     createdAt: row.created_at,
+    baseline: baselineFromRow(db, row),
+    inputHash: row.input_hash,
+    continuityGeneration: row.continuity_generation,
     character: characterSummary(row),
   }
 }
@@ -119,6 +150,11 @@ function readPayload(db: Database.Database, snapshotId: string): { payload: Snap
       return stored
     }),
   }))
+  const continuity = header.input_hash === null || header.continuity_generation === null ? {} : {
+    baseline: baselineFromRow(db, header),
+    inputHash: header.input_hash,
+    continuityGeneration: header.continuity_generation,
+  }
   return {
     payload: {
       version: CHAPTER_CHARACTER_STATE_SNAPSHOT_SCHEMA_VERSION,
@@ -126,6 +162,7 @@ function readPayload(db: Database.Database, snapshotId: string): { payload: Snap
       source: sourceFromRow(header),
       chapterTitle: header.chapter_title,
       characters,
+      ...continuity,
     },
     snapshotHash: header.snapshot_hash,
   }
@@ -180,39 +217,135 @@ function applyUpdate(
   }
 }
 
-function buildInitialPayload(context: FinalizedCharacterContext, updates: FinalizedCharacterStateUpdate[], chapterTitle: string): SnapshotPayload {
-  const operationId = operationIdFor(context.source)
-  const characters = context.characters.map(character => ({
-    characterId: character.characterId,
-    displayNameSnapshot: character.displayNameSnapshot,
-    aliases: [...character.aliases],
-    updatedAtChapter: context.source.chapterNumber,
-    fields: initialFields(context, character.characterId),
-  }))
-  for (const update of updates) applyUpdate(context, characters, update)
-  return {
-    version: CHAPTER_CHARACTER_STATE_SNAPSHOT_SCHEMA_VERSION,
-    operationId,
-    source: structuredClone(context.source),
-    chapterTitle,
-    characters,
-  }
+function readContinuity(db: Database.Database): ChapterCharacterStateContinuityEntry[] {
+  const sources = db.prepare(`SELECT d.id AS draft_id,d.chapter_number,o.finalization_id,o.content_hash,o.chapter_title
+    FROM drafts d JOIN finalization_outbox o ON o.draft_id=d.id
+    WHERE d.status='finalized' AND NOT EXISTS (
+      SELECT 1 FROM drafts newer WHERE newer.chapter_number=d.chapter_number AND newer.status='finalized'
+        AND (newer.version>d.version OR (newer.version=d.version AND newer.id>d.id))
+    ) ORDER BY d.chapter_number`).all() as Array<Pick<SnapshotRow, 'draft_id' | 'chapter_number' | 'finalization_id' | 'content_hash' | 'chapter_title'>>
+  const meta = db.prepare("SELECT generation,stale_from_chapter AS staleFromChapter FROM continuity_projection_meta WHERE id='main'")
+    .get() as { generation: number; staleFromChapter: number | null }
+  let chainValid = true
+  let previousValid: SnapshotRow | undefined
+  let gapChapterNumber: number | undefined
+  return sources.map((source, index) => {
+    const row = db.prepare('SELECT * FROM chapter_character_state_snapshots WHERE finalization_id=?')
+      .get(source.finalization_id) as SnapshotRow | undefined
+    let snapshot: ChapterCharacterStateContinuityEntry['snapshot']
+    let valid = false
+    if (row) {
+      const saved = readPayload(db, row.snapshot_id)
+      const generationCurrent = Number.isSafeInteger(row.continuity_generation) && row.continuity_generation! >= 0
+        && row.continuity_generation! <= meta.generation && (row.continuity_generation === meta.generation
+          || meta.staleFromChapter === null || row.chapter_number < meta.staleFromChapter)
+      const predecessorMatches = chainValid && (previousValid
+        ? row.predecessor_snapshot_id === previousValid.snapshot_id && row.predecessor_hash === previousValid.snapshot_hash
+        : index === 0 && row.predecessor_snapshot_id === null && row.predecessor_hash === null)
+      valid = !!saved && sha256(JSON.stringify(saved.payload)) === row.snapshot_hash && generationCurrent
+        && /^[a-f0-9]{64}$/.test(row.input_hash ?? '') && predecessorMatches
+      snapshot = {
+        snapshotId: row.snapshot_id,
+        source: sourceFromRow(row),
+        chapterTitle: row.chapter_title,
+        snapshotHash: row.snapshot_hash,
+        baseline: baselineFromRow(db, row),
+        inputHash: row.input_hash,
+        continuityGeneration: row.continuity_generation,
+      }
+    }
+    const waiting = !valid && !chainValid
+    const status = valid ? 'valid' : waiting ? 'waiting-predecessor' : row ? 'invalid-snapshot' : 'missing-snapshot'
+    if (!valid && chainValid) gapChapterNumber = source.chapter_number
+    chainValid = valid
+    previousValid = valid ? row : undefined
+    return {
+      source: sourceFromRow(source as SnapshotRow),
+      chapterTitle: source.chapter_title,
+      status,
+      ...(snapshot ? { snapshot } : {}),
+      ...(waiting ? { predecessorGapChapterNumber: gapChapterNumber } : {}),
+    }
+  })
 }
 
-function hasEarlierFinalization(db: Database.Database, chapterNumber: number): boolean {
-  return db.prepare(`SELECT 1 FROM drafts d JOIN finalization_outbox o ON o.draft_id=d.id
+function captureBaseline(context: FinalizedCharacterContext, db: Database.Database): ChapterCharacterStateSnapshotBaseline | null {
+  const previousFinalization = db.prepare(`SELECT o.finalization_id FROM drafts d JOIN finalization_outbox o ON o.draft_id=d.id
     WHERE d.status='finalized' AND d.chapter_number<? AND NOT EXISTS (
       SELECT 1 FROM drafts newer WHERE newer.chapter_number=d.chapter_number AND newer.status='finalized'
         AND (newer.version>d.version OR (newer.version=d.version AND newer.id>d.id))
-    ) LIMIT 1`).get(chapterNumber) !== undefined
+    ) ORDER BY d.chapter_number DESC LIMIT 1`).pluck().get(context.source.chapterNumber) as string | undefined
+  const previousEntry = previousFinalization
+    ? readContinuity(db).find(entry => entry.source.finalizationId === previousFinalization)
+    : undefined
+  const previousRow = previousEntry?.status === 'valid' && previousEntry.snapshot
+    ? readSnapshotRow(db, previousEntry.snapshot.snapshotId)
+    : undefined
+  if (previousFinalization && !previousRow) return null
+  const previous = previousRow ? readPayload(db, previousRow.snapshot_id) : null
+  if (previousRow && (!previous || sha256(JSON.stringify(previous.payload)) !== previous.snapshotHash)) {
+    throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_PREDECESSOR_INVALID')
+  }
+  const predecessor = previousRow && previous ? {
+    snapshotId: previousRow.snapshot_id,
+    snapshotHash: previousRow.snapshot_hash,
+    source: sourceFromRow(previousRow),
+  } : null
+  const characters = context.characters.map(character => {
+    const inherited = previous?.payload.characters.find(item => item.characterId === character.characterId)
+    const fields = inherited ? structuredClone(inherited.fields) : initialFields(context, character.characterId)
+    for (const captured of character.fields) {
+      if (captured.provenance.kind !== 'author' || captured.provenance.chapterNumber > context.source.chapterNumber) continue
+      const index = fields.findIndex(field => field.field === captured.field)
+      if (index < 0) throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_FIELD_MISSING')
+      fields[index] = {
+        field: captured.field,
+        value: captured.value,
+        provenance: { kind: 'author', chapterNumber: captured.provenance.chapterNumber },
+        knownAtChapter: captured.provenance.chapterNumber,
+      }
+    }
+    return {
+      characterId: character.characterId,
+      displayNameSnapshot: character.displayNameSnapshot,
+      aliases: [...character.aliases],
+      updatedAtChapter: context.source.chapterNumber,
+      fields,
+    }
+  })
+  const continuityGeneration = context.projectionGeneration
+  const inputHash = sha256(JSON.stringify({ version: 1, source: context.source, continuityGeneration, predecessor, characters }))
+  return { kind: predecessor ? 'snapshot' : 'roster', predecessor, characters, inputHash, continuityGeneration }
+}
+
+function buildPayload(context: FinalizedCharacterContext, updates: FinalizedCharacterStateUpdate[], chapterTitle: string,
+  baseline: ChapterCharacterStateSnapshotBaseline): SnapshotPayload {
+  const characters = structuredClone(baseline.characters)
+  for (const update of updates) applyUpdate(context, characters, update)
+  return {
+    version: CHAPTER_CHARACTER_STATE_SNAPSHOT_SCHEMA_VERSION,
+    operationId: operationIdFor(context.source),
+    source: structuredClone(context.source),
+    chapterTitle,
+    characters,
+    baseline: { kind: baseline.kind, predecessor: structuredClone(baseline.predecessor) },
+    inputHash: baseline.inputHash,
+    continuityGeneration: baseline.continuityGeneration,
+  }
 }
 
 function insertPayload(db: Database.Database, payload: SnapshotPayload, snapshotId: string, snapshotHash: string): void {
+  if (!payload.baseline || !payload.inputHash || payload.continuityGeneration === undefined) {
+    throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_CONTINUITY_REQUIRED')
+  }
   db.prepare(`INSERT INTO chapter_character_state_snapshots(
-    snapshot_id,operation_id,finalization_id,draft_id,chapter_number,chapter_title,content_hash,schema_version,snapshot_hash
-  ) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+    snapshot_id,operation_id,finalization_id,draft_id,chapter_number,chapter_title,content_hash,schema_version,snapshot_hash,
+    predecessor_snapshot_id,predecessor_hash,input_hash,continuity_generation
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     snapshotId, payload.operationId, payload.source.finalizationId, payload.source.draftId,
     payload.source.chapterNumber, payload.chapterTitle, payload.source.contentHash, payload.version, snapshotHash,
+    payload.baseline.predecessor?.snapshotId ?? null, payload.baseline.predecessor?.snapshotHash ?? null,
+    payload.inputHash, payload.continuityGeneration,
   )
   const characterInsert = db.prepare(`INSERT INTO chapter_character_state_snapshot_characters(
     snapshot_id,character_id,display_name_snapshot,aliases_json,updated_at_chapter
@@ -231,10 +364,15 @@ function insertPayload(db: Database.Database, payload: SnapshotPayload, snapshot
 }
 
 export class ChapterCharacterStateSnapshotRepository {
+  static captureBaseline(context: FinalizedCharacterContext, db: Database.Database): ChapterCharacterStateSnapshotBaseline | null {
+    return captureBaseline(context, db)
+  }
+
   static appendInitial(
     context: FinalizedCharacterContext,
     updates: FinalizedCharacterStateUpdate[],
     db: Database.Database,
+    frozenBaseline?: ChapterCharacterStateSnapshotBaseline,
   ): string | null {
     if (context.identityStatus !== 'bound') return null
     const source = db.prepare(`SELECT chapter_title AS chapterTitle,content_snapshot AS contentSnapshot,
@@ -252,9 +390,10 @@ export class ChapterCharacterStateSnapshotRepository {
       }
       return snapshotId
     }
-    const payload = buildInitialPayload(context, updates, source.chapterTitle)
+    const baseline = frozenBaseline ?? captureBaseline(context, db)
+    if (!baseline) return null
+    const payload = buildPayload(context, updates, source.chapterTitle, baseline)
     const snapshotHash = sha256(JSON.stringify(payload))
-    if (hasEarlierFinalization(db, context.source.chapterNumber)) return null
     insertPayload(db, payload, snapshotId, snapshotHash)
     const saved = readPayload(db, snapshotId)
     if (!saved || saved.snapshotHash !== snapshotHash || !isDeepStrictEqual(saved.payload, payload)
@@ -267,7 +406,7 @@ export class ChapterCharacterStateSnapshotRepository {
       FROM chapter_character_state_snapshots s
       JOIN chapter_character_state_snapshot_characters c ON c.snapshot_id=s.snapshot_id
       WHERE c.character_id=? ORDER BY s.chapter_number,s.created_at,s.snapshot_id`).all(characterId) as Array<SnapshotRow & CharacterRow>
-    return rows.map(summaryFromRows)
+    return rows.map(row => summaryFromRows(db, row))
   }
 
   static readForCharacter(db: Database.Database, snapshotId: string, characterId: string): ChapterCharacterStateSnapshotDetail | null {
@@ -280,6 +419,10 @@ export class ChapterCharacterStateSnapshotRepository {
     if (!character || character.fields.length !== CHARACTER_STATE_TEXT_FIELDS.length) {
       throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_INVALID')
     }
-    return { ...summaryFromRows(row), character }
+    return { ...summaryFromRows(db, row), character }
+  }
+
+  static readContinuity(db: Database.Database): ChapterCharacterStateContinuityEntry[] {
+    return readContinuity(db)
   }
 }

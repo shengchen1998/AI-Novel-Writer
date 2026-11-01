@@ -99,6 +99,7 @@ beforeEach(async () => {
       pendingStates = pendingStates.filter(candidate => candidate.candidateKey !== candidateKey)
       return { candidateKey, operationId: 'decision', payloadHash: 'd'.repeat(64), decision: 'accept', idempotent: false }
     }
+    if (channel === 'finalized-character:read-state-continuity') return []
     if (channel === 'character-avatar:read-batch') return { success: true, avatars: [] }
     if (channel === 'db:project-core-get') return null
     throw new Error(`未配置调用：${channel}`)
@@ -510,10 +511,11 @@ describe('角色名单', () => {
     await vi.waitFor(() => expect(startWorkflow).toHaveBeenCalledTimes(1))
   })
 
-  it('章节状态先读摘要，点击后按角色读取完整来源与证据，并切换英文文案', async () => {
+  it('章节状态先读摘要，点击后按角色读取基线、缺口、完整来源与证据，并切换英文文案', async () => {
     const source = { draftId: 7, finalizationId: 'final-1', chapterNumber: 1, contentHash: 'a'.repeat(64) }
     const summary = {
       snapshotId: 'snapshot-1', source, chapterTitle: '北塔', snapshotHash: 'b'.repeat(64), createdAt: '2026-11-01 12:00:00',
+      baseline: { kind: 'roster', predecessor: null }, inputHash: 'c'.repeat(64), continuityGeneration: 0,
       character: { characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['林舟'], updatedAtChapter: 1 },
     }
     const fields = [
@@ -532,6 +534,11 @@ describe('角色名单', () => {
     invoke.mockImplementation(async (channel, ...args) => {
       if (channel === 'finalized-character:list-state-snapshots') return [summary]
       if (channel === 'finalized-character:read-state-snapshot') return { ...summary, character: { ...summary.character, fields } }
+      if (channel === 'finalized-character:read-state-continuity') return [
+        { source, chapterTitle: '北塔', status: 'missing-snapshot' },
+        { source: { ...source, draftId: 8, finalizationId: 'final-2', chapterNumber: 2 }, chapterTitle: '南桥',
+          status: 'waiting-predecessor', predecessorGapChapterNumber: 1 },
+      ]
       return base(channel, ...args)
     })
     await render()
@@ -542,12 +549,17 @@ describe('角色名单', () => {
     expect(invoke.mock.calls.find(([channel]) => channel === 'finalized-character:list-state-snapshots')?.[1])
       .toEqual({ characterId: linzhou.characterId })
     expect(invoke.mock.calls.some(([channel]) => channel === 'finalized-character:read-state-snapshot')).toBe(false)
+    expect(host!.textContent).toContain('第 2 章等待前驱')
+    expect(host!.textContent).toContain('第 1 章缺少有效快照')
 
     await click(/第 1 章 · 北塔/)
     await vi.waitFor(() => expect(host!.textContent).toContain('林舟在北塔受伤'))
     expect(invoke.mock.calls.find(([channel]) => channel === 'finalized-character:read-state-snapshot')?.[1])
       .toEqual({ snapshotId: 'snapshot-1', characterId: linzhou.characterId })
     expect(host!.textContent).toContain('final-1')
+    expect(host!.textContent).toContain('角色名单初始基线')
+    expect(host!.textContent).toContain('输入哈希')
+    expect(host!.textContent).toContain('c'.repeat(64))
     expect(host!.textContent).toContain('定稿派生')
     expect(host!.textContent).toContain('作者输入')
     expect(host!.textContent).toContain('来源未知')
@@ -555,6 +567,8 @@ describe('角色名单', () => {
     expect(host!.textContent).toContain('正文证据')
 
     await act(async () => useLocaleStore.setState({ locale: 'en-US' }))
+    expect(host!.textContent).toContain('Chapter 2 is waiting for its predecessor')
+    expect(host!.textContent).toContain('Initial roster baseline')
     expect(host!.textContent).toContain('Derived from finalized prose')
     expect(host!.textContent).toContain('Author input')
     expect(host!.textContent).toContain('Unknown source')

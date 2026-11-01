@@ -105,7 +105,7 @@ export class FinalizationGeneration {
       } else {
         const characterProof = proveFinalizedCharacterGeneration(this.db, this.runs, this.projectId, handle, reference)
         // transferOrigin 同步读取已验证的转移凭据，与本事务同属一次同步执行；凭据被篡改只会读出 null/抛错，趋向冲突而非放行。
-        const applied = SummaryRepository.commitFinalizedCharacterStates(characterProof.context, characterProof.response, this.db, this.transferOrigin())
+        const applied = SummaryRepository.commitFinalizedCharacterStates(characterProof.context, characterProof.response, this.db, this.transferOrigin(), context.characterStateBaseline)
         const batch = characterProof.response.unresolved.some(item => item.displayName.trim())
           ? characters.stage({ kind: 'finalized-generation', handle: characterProof.currentHandle, artifact: reference }) : undefined
         receipt = { success: true, stepKey: 'character_cards', ...applied, unresolved: structuredClone(characterProof.response.unresolved), ...(batch ? { proposalBatchId: batch.proposalBatchId } : {}) }

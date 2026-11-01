@@ -18,7 +18,15 @@ export interface FinalizedCharacterGenerationReceipt extends FinalizedCharacterS
   proposalBatchId?: string
 }
 export interface FinalizedCharacterGenerationChannels {
-  'finalized-character:read-context': { args: [{ draftId: number }]; return: { contextId: string; context: FinalizedCharacterContext; originProjectId?: string } }
+  'finalized-character:read-context': {
+    args: [{ draftId: number }]
+    return: {
+      contextId: string
+      context: FinalizedCharacterContext
+      characterStateBaseline: import('./chapter-character-state-snapshot').ChapterCharacterStateSnapshotBaseline | null
+      originProjectId?: string
+    }
+  }
   'finalized-character:commit': { args: [FinalizedCharacterGenerationCommit]; return: FinalizedCharacterGenerationReceipt }
   'finalized-character:list-state-candidates': { args: []; return: PendingFinalizedCharacterStateCandidateSummary[] }
   'finalized-character:read-state-candidate': { args: [{ draftId: number; candidateKey: string }]; return: PendingFinalizedCharacterStateCandidate }
@@ -30,5 +38,9 @@ export interface FinalizedCharacterGenerationChannels {
   'finalized-character:read-state-snapshot': {
     args: [{ snapshotId: string; characterId: string }]
     return: import('./chapter-character-state-snapshot').ChapterCharacterStateSnapshotDetail | null
+  }
+  'finalized-character:read-state-continuity': {
+    args: []
+    return: import('./chapter-character-state-snapshot').ChapterCharacterStateContinuityEntry[]
   }
 }
