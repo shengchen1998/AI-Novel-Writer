@@ -684,4 +684,48 @@ describe('角色名单', () => {
       expect(diff.textContent).toContain(label)
     }
   })
+
+  it('历史详情保留定稿时姓名和别名，并用中英文标记未解析身份', async () => {
+    useCharacterStore.setState({ characters: [{ ...linzhou, name: '林舟现名' }], selectedId: linzhou.characterId } as never)
+    const source = { draftId: 7, finalizationId: 'final-identity', chapterNumber: 1, contentHash: 'a'.repeat(64) }
+    const summary = {
+      snapshotId: 'snapshot-identity', status: 'valid', validity: 'valid', source, chapterTitle: '北塔',
+      snapshotHash: 'b'.repeat(64), createdAt: '2026-11-01 12:00:00', baseline: { kind: 'snapshot', predecessor: null },
+      inputHash: 'c'.repeat(64), continuityGeneration: 0,
+      character: { characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['阿舟'], updatedAtChapter: 1 },
+    }
+    const occurrence = (displayName: string, reason: 'unknown-id' | 'ambiguous', candidateIds: string[]) => ({
+      selectionKey: `update:${displayName}`, displayName, originalText: displayName, candidateIds,
+      currentState: { location: '不能当作已确认状态' }, evidence: { start: 0, end: 2, text: '证据' }, rawValue: {}, reason,
+    })
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel, ...args) => {
+      if (channel === 'finalized-character:list-state-snapshots') return [summary]
+      if (channel === 'finalized-character:read-state-snapshot') return {
+        ...summary,
+        character: { ...summary.character, fields: [] },
+        unresolved: [occurrence('陌生人', 'unknown-id', []), occurrence('林舟', 'ambiguous', ['c-one', 'c-two'])],
+      }
+      return base(channel, ...args)
+    })
+    await render()
+    await click('章节状态')
+    await click(/第 1 章 · 北塔 · final-identity/)
+    await vi.waitFor(() => expect(host!.querySelector('.cast-history-heading p')?.textContent).toBe('林舟 · 阿舟'))
+    expect(host!.querySelector('.cast-history-heading p')?.textContent).not.toContain('林舟现名')
+    expect(host!.querySelector('.cast-history-detail')?.textContent).toContain('前驱快照已随删章移除')
+    const unresolved = () => host!.querySelector('.cast-history-unresolved')!
+    expect(unresolved().getAttribute('aria-label')).toBe('未解析身份')
+    for (const label of ['陌生人', '林舟', '未知身份', '身份歧义', '未写入角色状态']) {
+      expect(unresolved().textContent).toContain(label)
+    }
+    expect(unresolved().textContent).not.toContain('不能当作已确认状态')
+
+    await act(async () => useLocaleStore.setState({ locale: 'en-US' }))
+    expect(host!.querySelector('.cast-history-detail')?.textContent).toContain('Predecessor snapshot was removed with its chapter')
+    expect(unresolved().getAttribute('aria-label')).toBe('Unresolved identities')
+    for (const label of ['Unknown identity', 'Ambiguous identity', 'Not written to character state']) {
+      expect(unresolved().textContent).toContain(label)
+    }
+  })
 })

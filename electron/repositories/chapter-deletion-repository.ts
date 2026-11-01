@@ -190,6 +190,15 @@ function deleteDraftFacts(
   for (const runId of postProcessRunIds) {
     db.prepare('DELETE FROM post_process_runs WHERE id = ?').run(runId)
   }
+  const finalizationId = db.prepare('SELECT finalization_id FROM finalization_outbox WHERE draft_id = ?')
+    .pluck().get(draftId) as string | undefined
+  if (finalizationId) {
+    const snapshotIds = db.prepare('SELECT snapshot_id FROM chapter_character_state_snapshots WHERE finalization_id = ?')
+      .pluck().all(finalizationId) as string[]
+    const proposalIds = [`fcs:${finalizationId}`, ...snapshotIds.map(snapshotId => `fcu:${snapshotId}`)]
+    db.prepare(`DELETE FROM character_identity_proposals WHERE proposal_id IN (${proposalIds.map(() => '?').join(',')})`)
+      .run(...proposalIds)
+  }
   db.prepare('DELETE FROM drafts WHERE id = ?').run(draftId)
   for (const contentId of contentIds) {
     try {
