@@ -33,11 +33,15 @@ export interface FinalizedCharacterGenerationChannels {
   'finalized-character:decide-state-candidate': { args: [FinalizedCharacterStateDecisionRequest]; return: FinalizedCharacterStateDecisionReceipt }
   'finalized-character:list-state-snapshots': {
     args: [{ characterId: string }]
-    return: import('./chapter-character-state-snapshot').ChapterCharacterStateSnapshotSummary[]
+    return: import('./chapter-character-state-snapshot').ChapterCharacterStateSnapshotVersionSummary[]
   }
   'finalized-character:read-state-snapshot': {
     args: [{ snapshotId: string; characterId: string }]
     return: import('./chapter-character-state-snapshot').ChapterCharacterStateSnapshotDetail | null
+  }
+  'finalized-character:compare-state-snapshots': {
+    args: [{ beforeSnapshotId: string; afterSnapshotId: string; characterId: string }]
+    return: import('./chapter-character-state-snapshot').ChapterCharacterStateSnapshotDiff | null
   }
   'finalized-character:read-state-continuity': {
     args: []

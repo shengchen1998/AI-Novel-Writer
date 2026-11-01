@@ -588,4 +588,100 @@ describe('角色名单', () => {
     expect(host!.textContent).toContain('Pending confirmation')
     expect(host!.textContent).toContain('Legacy')
   })
+
+  it('同章定稿版本可用键盘切换，任意两版按需比较新增、变化、清空和未变化字段', async () => {
+    const source1 = { draftId: 7, finalizationId: 'final-1', chapterNumber: 1, contentHash: 'a'.repeat(64) }
+    const source2 = { draftId: 8, finalizationId: 'final-2', chapterNumber: 1, contentHash: 'b'.repeat(64) }
+    pendingStates = [{ ...stateCandidate('s-diff', 'physicalState', '可能康复'), source: source2, reason: 'legacy-protected' }]
+    const makeSummary = (snapshotId: string, source: typeof source1, validity: string) => ({
+      snapshotId, source, chapterTitle: '北塔', snapshotHash: 'c'.repeat(64), createdAt: '2026-11-01 12:00:00',
+      baseline: { kind: 'roster', predecessor: null }, inputHash: 'd'.repeat(64), continuityGeneration: 0, validity,
+      character: { characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['林舟'], updatedAtChapter: 1 },
+    })
+    const summary1 = makeSummary('snapshot-1', source1, 'superseded')
+    const summary2 = makeSummary('snapshot-2', source2, 'valid')
+    const field = (name: string, value: string, source = source1, evidence?: string) => ({
+      field: name, value, knownAtChapter: 1,
+      provenance: { kind: 'derived', source },
+      ...(evidence ? { evidence: { start: 0, end: evidence.length, text: evidence } } : {}),
+    })
+    const before = {
+      location: field('location', '旧站', source1, '旧版位置证据'),
+      powerLevel: { field: 'powerLevel', value: '', provenance: { kind: 'legacy' }, knownAtChapter: null },
+      physicalState: field('physicalState', '受伤', source1, '旧版伤势证据'),
+      mentalState: field('mentalState', '警觉'),
+      keyItems: field('keyItems', '黄铜钥匙'),
+      recentEvents: field('recentEvents', '抵达北塔'),
+    }
+    const after = {
+      location: field('location', '北塔', source2, '新版位置证据'),
+      powerLevel: field('powerLevel', '觉醒', source2, '新增能力证据'),
+      physicalState: { field: 'physicalState', value: '', provenance: { kind: 'legacy' }, knownAtChapter: null },
+      mentalState: field('mentalState', '警觉'),
+      keyItems: field('keyItems', '黄铜钥匙'),
+      recentEvents: field('recentEvents', '抵达北塔'),
+    }
+    const names = ['location', 'powerLevel', 'physicalState', 'mentalState', 'keyItems', 'recentEvents'] as const
+    const changes = { location: 'changed', powerLevel: 'added', physicalState: 'cleared', mentalState: 'unchanged', keyItems: 'unchanged', recentEvents: 'unchanged' }
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel, ...args) => {
+      if (channel === 'finalized-character:list-state-snapshots') return [summary1, summary2]
+      if (channel === 'finalized-character:read-state-snapshot') {
+        const { snapshotId } = args[0] as { snapshotId: string }
+        const summary = snapshotId === 'snapshot-1' ? summary1 : summary2
+        return { ...summary, character: { ...summary.character, fields: names.map(name => ({ ...(snapshotId === 'snapshot-1' ? before : after)[name] })) } }
+      }
+      if (channel === 'finalized-character:compare-state-snapshots') return {
+        before: { ...summary1, character: summary1.character },
+        after: { ...summary2, character: summary2.character },
+        fields: names.map(name => ({ field: name, change: changes[name], before: before[name], after: after[name] })),
+      }
+      return base(channel, ...args)
+    })
+    await render()
+    await click('章节状态')
+    await vi.waitFor(() => expect(button(/第 1 章 · 北塔 · final-1/)).toBeTruthy())
+    expect(host!.textContent).toContain('已取代')
+    expect(host!.textContent).toContain('当前有效')
+    expect(invoke.mock.calls.some(([channel]) => channel === 'finalized-character:compare-state-snapshots')).toBe(false)
+
+    const first = button(/第 1 章 · 北塔 · final-1/)!
+    await act(async () => {
+      first.focus()
+      await userEvent.keyboard('{Enter}')
+    })
+    await vi.waitFor(() => expect(host!.querySelector('.cast-history-detail')?.textContent).toContain('旧版位置证据'))
+    const second = button(/第 1 章 · 北塔 · final-2/)!
+    await act(async () => {
+      second.focus()
+      await userEvent.keyboard('{Enter}')
+    })
+    await vi.waitFor(() => expect(host!.querySelector('.cast-history-detail')?.textContent).toContain('新版位置证据'))
+
+    const beforeSelect = host!.querySelector<HTMLSelectElement>('select[aria-label="比较起点"]')
+    const afterSelect = host!.querySelector<HTMLSelectElement>('select[aria-label="比较终点"]')
+    expect(beforeSelect).not.toBeNull()
+    expect(afterSelect).not.toBeNull()
+    await act(async () => {
+      await userEvent.selectOptions(beforeSelect!, 'snapshot-1')
+      await userEvent.selectOptions(afterSelect!, 'snapshot-2')
+    })
+    await act(async () => {
+      button('比较字段')!.focus()
+      await userEvent.keyboard('{Enter}')
+    })
+    await vi.waitFor(() => expect(host!.querySelector('[aria-label="版本字段差异"]')).toBeTruthy())
+    const diff = host!.querySelector('[aria-label="版本字段差异"]')!
+    for (const label of ['新增', '变化', '已清空', '未变化', '已取代', '当前有效', '新增能力证据', '旧版伤势证据', '已知时点：第 1 章', '待确认', 'Legacy']) {
+      expect(diff.textContent).toContain(label)
+    }
+    expect(invoke.mock.calls.find(([channel]) => channel === 'finalized-character:compare-state-snapshots')?.[1]).toEqual({
+      beforeSnapshotId: 'snapshot-1', afterSnapshotId: 'snapshot-2', characterId: linzhou.characterId,
+    })
+
+    await act(async () => useLocaleStore.setState({ locale: 'en-US' }))
+    for (const label of ['Added', 'Changed', 'Cleared', 'Unchanged', 'Superseded', 'Currently valid', 'Pending confirmation', 'Legacy']) {
+      expect(diff.textContent).toContain(label)
+    }
+  })
 })

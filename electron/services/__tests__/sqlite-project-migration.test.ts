@@ -410,13 +410,15 @@ describe('real SQLite schema probe and WAL staging backup', () => {
   })
 })
 
-it('upgrades a qualified schema 6 file to schema 8 without changing author content', async () => {
+it('upgrades a qualified schema 6 file to schema 10 without changing author content', async () => {
  const f=fixture()
  const before=await backupProjectSqlite({sourceDatabasePath:f.source,targetDatabasePath:f.target,targetVersion:6})
  expect(before.schemaVersion).toBe(6)
  const upgraded=upgradeProjectSqlite({databasePath:f.target})
  expect(upgraded.schemaVersion).toBe(10)
- expect(upgraded.domain).toEqual(before.domain)
+ expect(upgraded.preIdentityDomain).toEqual(before.preIdentityDomain)
+ const db=new Database(f.target,{readonly:true})
+ try { expect(db.prepare('SELECT status,reason FROM chapter_character_state_cache_meta').get()).toEqual({status:'invalid',reason:'not-established'}) } finally { db.close() }
  expect(verifyProjectSqlite({databasePath:f.target})).toEqual(upgraded)
 })
 it('resolves a trusted system scratch junction before validating its private snapshot', () => {

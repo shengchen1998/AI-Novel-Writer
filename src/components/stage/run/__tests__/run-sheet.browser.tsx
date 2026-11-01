@@ -81,6 +81,7 @@ beforeEach(() => {
     if (channel === 'db:recovery-candidate-list') return candidates
     if (channel === 'generation:list-recovery') return { planning: [], editors: [], reviews: [], drafts: [], batches, partial: false }
     if (channel === 'finalized-character:read-state-continuity') return []
+    if (channel === 'finalized-character:read-state-cache') return { status: 'ready', reason: null, snapshotId: null, source: null }
     if (channel === 'skills:list-user') return []
     if (channel === 'fs:check-exists') return false
     if (channel === 'db:recovery-candidate-resolve') return { success: true }
@@ -126,12 +127,18 @@ describe('运行侧页', () => {
       inputHash: 'c'.repeat(64), continuityGeneration: 0,
     })
     const base = invoke.getMockImplementation()!
-    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => channel === 'finalized-character:read-state-continuity' ? [
-      { source: source(1), chapterTitle: '北塔', status: 'valid', snapshot: snapshot(1) },
-      { source: source(2), chapterTitle: '南桥', status: 'valid', snapshot: snapshot(2, 1) },
-      { source: source(3), chapterTitle: '雾港', status: 'missing-snapshot' },
-      { source: source(4), chapterTitle: '归途', status: 'waiting-predecessor', predecessorGapChapterNumber: 3 },
-    ] : base(channel, ...args))
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'finalized-character:read-state-cache') {
+        return { status: 'rebuild-required', reason: 'cas-conflict', snapshotId: 'snapshot-2', source: source(2) }
+      }
+      if (channel === 'finalized-character:read-state-continuity') return [
+        { source: source(1), chapterTitle: '北塔', status: 'valid', snapshot: snapshot(1) },
+        { source: source(2), chapterTitle: '南桥', status: 'valid', snapshot: snapshot(2, 1) },
+        { source: source(3), chapterTitle: '雾港', status: 'missing-snapshot' },
+        { source: source(4), chapterTitle: '归途', status: 'waiting-predecessor', predecessorGapChapterNumber: 3 },
+      ]
+      return base(channel, ...args)
+    })
     await render()
     await vi.waitFor(() => expect(host!.textContent).toContain('当前基线：第 2 章'))
     expect(host!.textContent).toContain('继承第 1 章快照')
@@ -139,11 +146,13 @@ describe('运行侧页', () => {
     expect(host!.textContent).toContain('第 4 章等待前驱')
     expect(host!.textContent).toContain('第 3 章缺少有效快照')
     expect(host!.textContent).toContain('没有进行中的运行')
+    expect(host!.textContent).toContain('缓存待重建')
 
     await act(async () => useLocaleStore.setState({ locale: 'en-US' }))
     expect(host!.textContent).toContain('Current baseline: chapter 2')
     expect(host!.textContent).toContain('Inherited from the chapter 1 snapshot')
     expect(host!.textContent).toContain('Chapter 4 is waiting for its predecessor')
+    expect(host!.textContent).toContain('Cache rebuild required')
   })
 
   it('三个分页：进行中看运行，历史列出结束的运行并展开看步骤，诊断是宽版', async () => {
@@ -442,7 +451,7 @@ describe('运行侧页', () => {
     await vi.waitFor(() => expect(invoke.mock.calls.filter(([channel]) => channel === 'generation:list-recovery')).toHaveLength(2))
     await vi.waitFor(() => expect(titles()).toEqual(['第8章候选']))
     expect(invoke.mock.calls.map(([channel]) => channel).filter(channel => ![
-      'generation:list-recovery', 'db:recovery-candidate-list', 'finalized-character:read-state-continuity',
+      'generation:list-recovery', 'db:recovery-candidate-list', 'finalized-character:read-state-continuity', 'finalized-character:read-state-cache',
     ].includes(channel))).toEqual([])
   })
 

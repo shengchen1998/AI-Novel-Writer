@@ -625,6 +625,121 @@ describe('first chapter character-state snapshot through real finalization and g
     expect(extraction.fetch).toHaveBeenCalledTimes(1)
   })
 
+  it('appends same-chapter versions without reviving the superseded snapshot while the replacement is pending or fails', async () => {
+    const revisedProse = '林岚在北塔康复，周研仍留在旧站。'
+    seedDraft()
+    seedCharacter('character-lin', '林岚', {}, {})
+    const firstFinalization = await finalize()
+    const firstExtraction = await extractedCommit(1, [{
+      characterId: 'character-lin',
+      currentState: { physicalState: '受伤' },
+      evidence: { start: 0, end: prose.length, text: prose },
+    }])
+    await invoke('finalization-generation:commit', firstExtraction.request)
+    const [first] = await listSnapshots('character-lin')
+    expect(first).toMatchObject({ source: { finalizationId: firstFinalization.finalizationId }, validity: 'valid' })
+
+    getProjectDb()!.prepare('INSERT INTO contents(id,body) VALUES(2,?)').run(revisedProse)
+    getProjectDb()!.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id,word_count) VALUES(2,1,2,'draft',2,12)").run()
+    const secondFinalization = await finalize(2, revisedProse)
+    expect(secondFinalization.finalizationId).not.toBe(firstFinalization.finalizationId)
+    expect(await listSnapshots('character-lin')).toEqual([
+      expect.objectContaining({ snapshotId: first!.snapshotId, validity: 'superseded' }),
+    ])
+    await expect(invoke('finalized-character:read-state-continuity')).resolves.toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ finalizationId: secondFinalization.finalizationId }), status: 'missing-snapshot' }),
+    ])
+
+    const secondExtraction = await extractedCommit(2, [{
+      characterId: 'character-lin',
+      currentState: { physicalState: '康复' },
+      evidence: { start: 0, end: revisedProse.length, text: revisedProse },
+    }])
+    getProjectDb()!.exec(`CREATE TRIGGER reject_revised_chapter_state_snapshot
+      BEFORE INSERT ON chapter_character_state_snapshots
+      BEGIN SELECT RAISE(ABORT,'SYNTHETIC_REVISED_SNAPSHOT_FAILURE'); END`)
+    await expect(invoke('finalization-generation:commit', secondExtraction.request)).rejects.toThrow()
+    expect(await listSnapshots('character-lin')).toEqual([
+      expect.objectContaining({ snapshotId: first!.snapshotId, validity: 'superseded' }),
+    ])
+
+    getProjectDb()!.exec('DROP TRIGGER reject_revised_chapter_state_snapshot')
+    await invoke('finalization-generation:commit', secondExtraction.request)
+    await invoke('finalization-generation:commit', secondExtraction.request)
+    const versions = await listSnapshots('character-lin')
+    expect(versions).toHaveLength(2)
+    expect(versions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: expect.objectContaining({ finalizationId: firstFinalization.finalizationId }), validity: 'superseded' }),
+      expect.objectContaining({ source: expect.objectContaining({ finalizationId: secondFinalization.finalizationId }), validity: 'valid' }),
+    ]))
+    expect(new Set(versions.map(version => version.snapshotId)).size).toBe(2)
+    expect(secondExtraction.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('compares any two versions on demand with field changes, provenance, evidence, timing, and validity', async () => {
+    const revisedProse = '林岚在北塔御火，伤势已经康复，保持警觉。'
+    seedDraft()
+    seedCharacter('character-lin', '林岚', {}, {})
+    const firstFinalization = await finalize()
+    const firstExtraction = await extractedCommit(1, [{
+      characterId: 'character-lin',
+      currentState: { location: '北塔', powerLevel: '觉醒', physicalState: '受伤' },
+      evidence: { start: 0, end: prose.length, text: prose },
+    }])
+    await invoke('finalization-generation:commit', firstExtraction.request)
+    const [first] = await listSnapshots('character-lin')
+
+    getProjectDb()!.prepare('INSERT INTO contents(id,body) VALUES(2,?)').run(revisedProse)
+    getProjectDb()!.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id,word_count) VALUES(2,1,2,'draft',2,12)").run()
+    const secondFinalization = await finalize(2, revisedProse)
+    const secondExtraction = await extractedCommit(2, [{
+      characterId: 'character-lin',
+      currentState: { location: '北塔', powerLevel: '御火', physicalState: '', mentalState: '警觉' },
+      evidence: { start: 0, end: revisedProse.length, text: revisedProse },
+    }])
+    await invoke('finalization-generation:commit', secondExtraction.request)
+    const versions = await listSnapshots('character-lin')
+    const second = versions.find(version => version.snapshotId !== first!.snapshotId)!
+
+    const diff = await invoke<{
+      before: { validity: string; character: { characterId: string; displayNameSnapshot: string } }
+      after: { validity: string; character: { characterId: string; displayNameSnapshot: string } }
+      fields: Array<{ field: string; change: string; before: Record<string, unknown> | null; after: Record<string, unknown> | null }>
+    }>('finalized-character:compare-state-snapshots', {
+      beforeSnapshotId: first!.snapshotId,
+      afterSnapshotId: second.snapshotId,
+      characterId: 'character-lin',
+    })
+    expect(diff.before).toMatchObject({ validity: 'superseded', character: { characterId: 'character-lin', displayNameSnapshot: '林岚' } })
+    expect(diff.after).toMatchObject({ validity: 'valid', character: { characterId: 'character-lin', displayNameSnapshot: '林岚' } })
+    const fields = Object.fromEntries(diff.fields.map(field => [field.field, field]))
+    expect(fields.mentalState).toMatchObject({
+      change: 'added', before: { value: '' },
+      after: {
+        value: '警觉', knownAtChapter: 1,
+        provenance: { kind: 'derived', source: { finalizationId: secondFinalization.finalizationId } },
+        evidence: { text: revisedProse },
+      },
+    })
+    expect(fields.powerLevel).toMatchObject({
+      change: 'changed',
+      before: { value: '觉醒', provenance: { kind: 'derived', source: { finalizationId: firstFinalization.finalizationId } } },
+      after: { value: '御火', knownAtChapter: 1, provenance: { kind: 'derived', source: { finalizationId: secondFinalization.finalizationId } } },
+    })
+    expect(fields.physicalState).toMatchObject({
+      change: 'cleared',
+      before: { value: '受伤', knownAtChapter: 1, evidence: { text: prose } },
+      after: { value: '', knownAtChapter: null, provenance: { kind: 'legacy' } },
+    })
+    expect(fields.location).toMatchObject({
+      change: 'unchanged',
+      before: { value: '北塔', knownAtChapter: 1, provenance: { kind: 'derived', source: { finalizationId: firstFinalization.finalizationId } } },
+      after: { value: '北塔', knownAtChapter: 1, provenance: { kind: 'derived', source: { finalizationId: secondFinalization.finalizationId } } },
+    })
+    expect(diff.fields).toHaveLength(6)
+    expect(versions.every(version => !('fields' in (version.character as Record<string, unknown>)))).toBe(true)
+  })
+
   it('keeps finalization committed after snapshot storage fails and retries the same artifact without duplicate history', async () => {
     seedDraft()
     seedCharacter('character-lin', '林岚', {}, {})

@@ -100,9 +100,10 @@ function physicalSnapshot(source: string) {
 type DomainColumns = { name: string; columns: string[] }[]
 const quoteIdentifier = (value: string) => '"' + value.replaceAll('"', '""') + '"'
 const M05_ASSET_TABLES = ['character_avatar_assets', 'character_avatar_unresolved'] as const
+const M09_CACHE_TABLES = ['chapter_character_state_cache_meta'] as const
 function domainColumns(db: BetterSqlite3.Database, preIdentity = false, preAsset = false): DomainColumns {
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]
-  const postLegacyTables = [...M02_AUXILIARY_TABLES, ...M03_REVIEW_CYCLE_TABLES, ...M05_ASSET_TABLES] as readonly string[]
+  const postLegacyTables = [...M02_AUXILIARY_TABLES, ...M03_REVIEW_CYCLE_TABLES, ...M05_ASSET_TABLES, ...M09_CACHE_TABLES] as readonly string[]
   return tables.filter(({ name }) => (!preIdentity || !postLegacyTables.includes(name))
     && (!preAsset || !(M05_ASSET_TABLES as readonly string[]).includes(name))).map(({ name }) => ({ name,
     columns: (db.prepare(`PRAGMA table_info(${quoteIdentifier(name)})`).all() as { name: string }[]).map(column => column.name)

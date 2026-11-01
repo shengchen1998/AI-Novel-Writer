@@ -8,8 +8,12 @@ import {
   type ChapterCharacterStateSnapshotCharacterSummary,
   type ChapterCharacterStateContinuityEntry,
   type ChapterCharacterStateSnapshotDetail,
+  type ChapterCharacterStateSnapshotDiff,
+  type ChapterCharacterStateSnapshotDiffSide,
   type ChapterCharacterStateSnapshotField,
   type ChapterCharacterStateSnapshotSummary,
+  type ChapterCharacterStateSnapshotValidity,
+  type ChapterCharacterStateSnapshotVersionSummary,
 } from '../../src/shared/chapter-character-state-snapshot'
 import { CHARACTER_STATE_TEXT_FIELDS, type CharacterStateFieldProvenance } from '../../src/shared/character-roster'
 import type {
@@ -116,6 +120,23 @@ function summaryFromRows(db: Database.Database, row: SnapshotRow & CharacterRow,
     inputHash: row.input_hash,
     continuityGeneration: row.continuity_generation,
     character: characterSummary(row),
+  }
+}
+
+function readValidityByFinalization(db: Database.Database): Map<string, ChapterCharacterStateSnapshotValidity> {
+  return new Map(readContinuity(db).map(entry => [entry.source.finalizationId,
+    entry.status === 'valid' ? 'valid' : entry.status === 'waiting-predecessor' ? 'waiting-predecessor' : 'invalid']))
+}
+
+function versionSummaryFromRows(
+  db: Database.Database,
+  row: SnapshotRow & CharacterRow,
+  validityByFinalization: Map<string, ChapterCharacterStateSnapshotValidity>,
+): ChapterCharacterStateSnapshotVersionSummary {
+  const validity = validityByFinalization.get(row.finalization_id) ?? 'superseded'
+  return {
+    ...summaryFromRows(db, row, validity === 'valid' ? 'valid' : 'invalid'),
+    validity,
   }
 }
 
@@ -404,14 +425,13 @@ export class ChapterCharacterStateSnapshotRepository {
     return snapshotId
   }
 
-  static listForCharacter(db: Database.Database, characterId: string): ChapterCharacterStateSnapshotSummary[] {
+  static listForCharacter(db: Database.Database, characterId: string): ChapterCharacterStateSnapshotVersionSummary[] {
     const rows = db.prepare(`SELECT s.*,c.character_id,c.display_name_snapshot,c.aliases_json,c.updated_at_chapter
       FROM chapter_character_state_snapshots s
       JOIN chapter_character_state_snapshot_characters c ON c.snapshot_id=s.snapshot_id
       WHERE c.character_id=? ORDER BY s.chapter_number,s.created_at,s.snapshot_id`).all(characterId) as Array<SnapshotRow & CharacterRow>
-    const statuses = new Map(readContinuity(db).flatMap(entry => entry.snapshot
-      ? [[entry.snapshot.snapshotId, entry.status === 'valid' ? 'valid' : 'invalid'] as const] : []))
-    return rows.map(row => summaryFromRows(db, row, statuses.get(row.snapshot_id) ?? 'invalid'))
+    const validityByFinalization = readValidityByFinalization(db)
+    return rows.map(row => versionSummaryFromRows(db, row, validityByFinalization))
   }
 
   static readForCharacter(db: Database.Database, snapshotId: string, characterId: string): ChapterCharacterStateSnapshotDetail | null {
@@ -424,8 +444,41 @@ export class ChapterCharacterStateSnapshotRepository {
     if (!character || character.fields.length !== CHARACTER_STATE_TEXT_FIELDS.length) {
       throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_INVALID')
     }
-    const status = readContinuity(db).find(entry => entry.snapshot?.snapshotId === snapshotId)?.status
-    return { ...summaryFromRows(db, row, status === 'valid' ? 'valid' : 'invalid'), character }
+    return { ...versionSummaryFromRows(db, row, readValidityByFinalization(db)), character }
+  }
+
+  static compareForCharacter(
+    db: Database.Database,
+    beforeSnapshotId: string,
+    afterSnapshotId: string,
+    characterId: string,
+  ): ChapterCharacterStateSnapshotDiff | null {
+    const before = this.readForCharacter(db, beforeSnapshotId, characterId)
+    const after = this.readForCharacter(db, afterSnapshotId, characterId)
+    if (!before || !after) return null
+    const side = (detail: ChapterCharacterStateSnapshotDetail): ChapterCharacterStateSnapshotDiffSide => ({
+      snapshotId: detail.snapshotId,
+      source: detail.source,
+      chapterTitle: detail.chapterTitle,
+      validity: detail.validity,
+      character: {
+        characterId: detail.character.characterId,
+        displayNameSnapshot: detail.character.displayNameSnapshot,
+        aliases: detail.character.aliases,
+        updatedAtChapter: detail.character.updatedAtChapter,
+      },
+    })
+    return {
+      before: side(before),
+      after: side(after),
+      fields: CHARACTER_STATE_TEXT_FIELDS.map(field => {
+        const beforeField = before.character.fields.find(candidate => candidate.field === field)!
+        const afterField = after.character.fields.find(candidate => candidate.field === field)!
+        const change = beforeField.value === afterField.value ? 'unchanged'
+          : beforeField.value === '' ? 'added' : afterField.value === '' ? 'cleared' : 'changed'
+        return { field, change, before: beforeField, after: afterField }
+      }),
+    }
   }
 
   static readContinuity(db: Database.Database): ChapterCharacterStateContinuityEntry[] {

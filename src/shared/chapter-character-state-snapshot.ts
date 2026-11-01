@@ -66,8 +66,37 @@ export interface ChapterCharacterStateSnapshotSummary {
   character: ChapterCharacterStateSnapshotCharacterSummary
 }
 
-export type ChapterCharacterStateSnapshotDetail = Omit<ChapterCharacterStateSnapshotSummary, 'character'> & {
+export type ChapterCharacterStateSnapshotValidity = 'valid' | 'superseded' | 'invalid' | 'waiting-predecessor'
+
+export interface ChapterCharacterStateSnapshotVersionSummary extends ChapterCharacterStateSnapshotSummary {
+  validity: ChapterCharacterStateSnapshotValidity
+}
+
+export type ChapterCharacterStateSnapshotDetail = Omit<ChapterCharacterStateSnapshotVersionSummary, 'character'> & {
   character: ChapterCharacterStateSnapshotCharacter
+}
+
+export type ChapterCharacterStateSnapshotFieldChange = 'added' | 'changed' | 'cleared' | 'unchanged'
+
+export interface ChapterCharacterStateSnapshotDiffSide {
+  snapshotId: string
+  source: FinalizedSourceIdentity
+  chapterTitle: string
+  validity: ChapterCharacterStateSnapshotValidity
+  character: ChapterCharacterStateSnapshotCharacterSummary
+}
+
+export interface ChapterCharacterStateSnapshotFieldDiff {
+  field: CharacterStateTextField
+  change: ChapterCharacterStateSnapshotFieldChange
+  before: ChapterCharacterStateSnapshotField
+  after: ChapterCharacterStateSnapshotField
+}
+
+export interface ChapterCharacterStateSnapshotDiff {
+  before: ChapterCharacterStateSnapshotDiffSide
+  after: ChapterCharacterStateSnapshotDiffSide
+  fields: ChapterCharacterStateSnapshotFieldDiff[]
 }
 
 export interface ChapterCharacterStateContinuityEntry {

@@ -36,6 +36,8 @@ let invoke: ReturnType<typeof vi.fn<(channel: string, ...args: unknown[]) => Pro
 function reply(channel: string): unknown {
   if (channel === 'config:get') return { locale: configLocale }
   if (channel === 'project:smoke-open-request') return null
+  if (channel === 'finalized-character:read-state-continuity') return []
+  if (channel === 'finalized-character:read-state-cache') return { status: 'ready', reason: null, snapshotId: null, source: null }
   if (/list|history|models/i.test(channel)) return []
   if (channel === 'fs:check-exists') return false
   return { success: true }
