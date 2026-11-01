@@ -83,9 +83,42 @@ export class FinalizationGeneration {
     if (this.readEffect(run)) throw new Error('GENERATION_FINALIZATION_EFFECT_SEALED')
     if (this.find(readFinalizationGenerationContext(run).slot)?.runId !== run.runId) throw new Error('GENERATION_FINALIZATION_SUPERSEDED')
   }
-  commit(handle: MainGenerationRunHandle, reference: FinalizedCharacterArtifact, characters: CharacterProposalService, assertSources: (run: DurableGenerationRun) => void): FinalizationGenerationEffect {
-    return this.db.transaction(() => {
+  private commitCharacter(handle: MainGenerationRunHandle, reference: FinalizedCharacterArtifact, characters: CharacterProposalService,
+    assertSources: (run: DurableGenerationRun) => void): FinalizationGenerationEffect {
+    const prepared = this.db.transaction(() => {
       const run = this.require(handle), context = readFinalizationGenerationContext(run), proof = this.artifact(run, reference)
+      const usage = JSON.parse(this.db.prepare('SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?').pluck().get(proof.attemptId) as string) as Record<string, unknown>
+      const saved = this.readEffect(run)
+      if (saved) {
+        if (!isDeepStrictEqual((usage.finalizationEffect as SavedEffect | undefined)?.artifact, reference)) throw new Error('GENERATION_FINALIZATION_EFFECT_CONFLICT')
+        return { saved }
+      }
+      this.assertMutable(run)
+      assertSources(run)
+      const characterProof = proveFinalizedCharacterGeneration(this.db, this.runs, this.projectId, handle, reference)
+      return { run, context, proof, usage, characterProof }
+    }).immediate()
+    if ('saved' in prepared && prepared.saved) return prepared.saved
+    const applied = SummaryRepository.commitFinalizedCharacterStates(prepared.characterProof.context, prepared.characterProof.response,
+      this.db, this.transferOrigin(), prepared.context.characterStateBaseline)
+    const batch = prepared.characterProof.response.unresolved.some(item => item.displayName.trim())
+      ? characters.stage({ kind: 'finalized-generation', handle: prepared.characterProof.currentHandle, artifact: reference }) : undefined
+    const receipt: FinalizationGenerationEffect = { success: true, stepKey: 'character_cards', ...applied,
+      unresolved: structuredClone(prepared.characterProof.response.unresolved), ...(batch ? { proposalBatchId: batch.proposalBatchId } : {}) }
+    return this.db.transaction(() => {
+      const effect: SavedEffect = { version: 1, artifact: structuredClone(reference), contextHash: textHash(JSON.stringify(prepared.context)),
+        receipt, receiptHash: textHash(JSON.stringify(receipt)) }
+      this.db.prepare('UPDATE generation_attempts SET usage_receipt_json=? WHERE attempt_id=?')
+        .run(JSON.stringify({ ...prepared.usage, finalizationEffect: effect }), prepared.proof.attemptId)
+      return structuredClone(receipt)
+    }).immediate()
+  }
+
+  commit(handle: MainGenerationRunHandle, reference: FinalizedCharacterArtifact, characters: CharacterProposalService, assertSources: (run: DurableGenerationRun) => void): FinalizationGenerationEffect {
+    const context = readFinalizationGenerationContext(this.require(handle))
+    if (context.slot.stepKey === 'character_cards') return this.commitCharacter(handle, reference, characters, assertSources)
+    return this.db.transaction(() => {
+      const run = this.require(handle), proof = this.artifact(run, reference)
       const usage = JSON.parse(this.db.prepare('SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?').pluck().get(proof.attemptId) as string) as Record<string, unknown>
       const saved = this.readEffect(run)
       if (saved) {
@@ -94,22 +127,12 @@ export class FinalizationGeneration {
       }
       this.assertMutable(run)
       assertSources(run)
-      let receipt: FinalizationGenerationEffect
-      if (context.slot.stepKey === 'chapter_notes') {
-        if (!isDeepStrictEqual(finalizationNotesBaseline(this.db, context.slot), context.notesBaseline)) throw new Error('GENERATION_FINALIZATION_NOTES_CHANGED')
-        const chapterNotes = proof.artifact.text.trim(), { source } = context.slot
-        const facts = buildFinalizedContinuityFacts(source.chapterNumber, chapterNotes, context.identity.content, context.chapterEntities, context.identity)
-        SummaryRepository.saveFinalizedContinuity({ draftId: source.draftId, chapterNumber: source.chapterNumber, source, chapterNotes, facts, projectionGeneration: context.identity.projectionGeneration }, this.db)
-        const blueprintUpdated = BlueprintRepository.updateNotes(source.chapterNumber, chapterNotes, this.db)
-        receipt = { success: true, stepKey: 'chapter_notes', chapterNotes, factCount: facts.length, blueprintUpdated }
-      } else {
-        const characterProof = proveFinalizedCharacterGeneration(this.db, this.runs, this.projectId, handle, reference)
-        // transferOrigin 同步读取已验证的转移凭据，与本事务同属一次同步执行；凭据被篡改只会读出 null/抛错，趋向冲突而非放行。
-        const applied = SummaryRepository.commitFinalizedCharacterStates(characterProof.context, characterProof.response, this.db, this.transferOrigin(), context.characterStateBaseline)
-        const batch = characterProof.response.unresolved.some(item => item.displayName.trim())
-          ? characters.stage({ kind: 'finalized-generation', handle: characterProof.currentHandle, artifact: reference }) : undefined
-        receipt = { success: true, stepKey: 'character_cards', ...applied, unresolved: structuredClone(characterProof.response.unresolved), ...(batch ? { proposalBatchId: batch.proposalBatchId } : {}) }
-      }
+      if (!isDeepStrictEqual(finalizationNotesBaseline(this.db, context.slot), context.notesBaseline)) throw new Error('GENERATION_FINALIZATION_NOTES_CHANGED')
+      const chapterNotes = proof.artifact.text.trim(), { source } = context.slot
+      const facts = buildFinalizedContinuityFacts(source.chapterNumber, chapterNotes, context.identity.content, context.chapterEntities, context.identity)
+      SummaryRepository.saveFinalizedContinuity({ draftId: source.draftId, chapterNumber: source.chapterNumber, source, chapterNotes, facts, projectionGeneration: context.identity.projectionGeneration }, this.db)
+      const blueprintUpdated = BlueprintRepository.updateNotes(source.chapterNumber, chapterNotes, this.db)
+      const receipt: FinalizationGenerationEffect = { success: true, stepKey: 'chapter_notes', chapterNotes, factCount: facts.length, blueprintUpdated }
       const effect: SavedEffect = { version: 1, artifact: structuredClone(reference), contextHash: textHash(JSON.stringify(context)), receipt, receiptHash: textHash(JSON.stringify(receipt)) }
       this.db.prepare('UPDATE generation_attempts SET usage_receipt_json=? WHERE attempt_id=?').run(JSON.stringify({ ...usage, finalizationEffect: effect }), proof.attemptId)
       return structuredClone(receipt)

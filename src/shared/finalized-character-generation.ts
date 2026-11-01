@@ -43,4 +43,8 @@ export interface FinalizedCharacterGenerationChannels {
     args: []
     return: import('./chapter-character-state-snapshot').ChapterCharacterStateContinuityEntry[]
   }
+  'finalized-character:read-state-cache': {
+    args: []
+    return: import('./chapter-character-state-snapshot').ChapterCharacterStateCacheStatus
+  }
 }

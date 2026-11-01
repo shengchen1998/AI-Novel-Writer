@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 9,
+  "schemaVersion": 10,
   "rules": {
     "D": ["preserve-domain", "signed-domain-value", "portable-domain-copy"],
     "H": ["historical-nonreplayable", "nonreplayable-history", "portable-history-projector"],
@@ -22,6 +22,7 @@
     "chapter_character_state_snapshot_characters",
     "chapter_character_state_snapshot_fields"
   ],
+  "m09Tables": ["chapter_character_state_cache_meta"],
   "optionalFields": ["characters.avatar"],
   "deltaCharacterFields": ["character_id", "legacy_key", "static_provenance", "identity_revision", "retired"],
   "signedOverrides": {
@@ -84,6 +85,7 @@
     "chapter_character_state_snapshots": {"snapshot_id":"H","operation_id":"H","finalization_id":"H","draft_id":"H","chapter_number":"H","chapter_title":"H","content_hash":"H","schema_version":"H","snapshot_hash":"H","created_at":"H","predecessor_snapshot_id":"H","predecessor_hash":"H","input_hash":"H","continuity_generation":"H"},
     "chapter_character_state_snapshot_characters": {"snapshot_id":"H","character_id":"H","display_name_snapshot":"H","aliases_json":"H","updated_at_chapter":"H"},
     "chapter_character_state_snapshot_fields": {"snapshot_id":"H","character_id":"H","field":"H","value":"H","provenance_kind":"H","known_at_chapter":"H","provenance_json":"H","evidence_json":"H"},
+    "chapter_character_state_cache_meta": {"id":"D","status":"D","reason":"D","snapshot_id":"D","snapshot_hash":"D","finalization_id":"D","roster_revision":"D","updated_at":"D"},
     "character_aliases": {"character_id":"D","name":"D","source_key":"D","valid_from":"D","valid_through":"D"},
     "character_avatar_assets": {"character_id":"A","asset_revision":"A","relative_path":"A","content_hash":"A","mime":"A","byte_size":"A","source_reference":"A"},
     "character_avatar_unresolved": {"record_id":"A","disposition":"A","source_reference":"A","source_relative_path":"A","preserved_relative_path":"A","content_hash":"A","mime":"A","byte_size":"A","candidate_character_ids_json":"A"},

@@ -125,18 +125,18 @@ describe('finalized character extraction through the main owner', () => {
     expect(f.db.prepare("SELECT characters_arch FROM project_core WHERE id='main'").pluck().get()).toBe(staticProjection)
     expect(f.dispatch).toHaveBeenCalledTimes(1)
   })
-  it('rejects a field edit made after dedicated context admission and leaves its author value intact', async () => {
+  it('marks cache rebuild required after dedicated context admission and leaves its author value intact', async () => {
     const f = fixture()
     const request = await f.run()
     f.db.prepare('UPDATE characters SET cs_location=? WHERE character_id=?').run('作者后来设置', f.characterId)
-    expect(() => f.owner.commitFinalizationGeneration(request)).toThrow()
+    expect(f.owner.commitFinalizationGeneration(request)).toMatchObject({ cacheStatus: 'rebuild-required', cacheConflict: true })
     expect(f.db.prepare('SELECT cs_location FROM characters WHERE character_id=?').pluck().get(f.characterId)).toBe('作者后来设置')
     expect(f.dispatch).toHaveBeenCalledTimes(1)
   })
   it('keeps a late field-conflicting artifact as a candidate without replacing author text', async () => {
     const f = fixture(), request = await f.run()
     f.db.prepare('UPDATE characters SET cs_location=? WHERE character_id=?').run('作者后来设置', f.characterId)
-    expect(() => f.owner.commitFinalizationGeneration(request)).toThrow()
+    expect(f.owner.commitFinalizationGeneration(request)).toMatchObject({ cacheStatus: 'rebuild-required', cacheConflict: true })
     expect(f.db.prepare('SELECT cs_location FROM characters WHERE character_id=?').pluck().get(f.characterId)).toBe('作者后来设置')
     expect(f.owner.read(request.handle).candidates).toHaveLength(1)
   })
@@ -159,10 +159,10 @@ describe('finalized character extraction through the main owner', () => {
     expect(() => f.owner.commitFinalizationGeneration(request)).toThrow('GENERATION_FINALIZED_SOURCE_NOT_CURRENT')
     expect(f.db.prepare('SELECT cs_location FROM characters WHERE character_id=?').pluck().get(f.characterId)).toBe('')
   })
-  it('rolls back state and provenance when storage rejects an update', async () => {
+  it('preserves the snapshot and marks cache rebuild required when cache storage rejects an update', async () => {
     const f = fixture(), request = await f.run()
     f.db.exec("CREATE TRIGGER reject_state BEFORE UPDATE OF cs_provenance ON characters BEGIN SELECT RAISE(ABORT,'SYNTHETIC_STORAGE_FAILURE'); END")
-    expect(() => f.owner.commitFinalizationGeneration(request)).toThrow('SYNTHETIC_STORAGE_FAILURE')
+    expect(f.owner.commitFinalizationGeneration(request)).toMatchObject({ cacheStatus: 'rebuild-required', cacheConflict: true })
     expect(f.db.prepare('SELECT cs_location FROM characters WHERE character_id=?').pluck().get(f.characterId)).toBe('')
     expect(f.owner.read(request.handle).candidates).toHaveLength(1)
   })

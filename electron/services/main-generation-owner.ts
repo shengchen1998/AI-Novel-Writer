@@ -1513,6 +1513,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     listChapterCharacterStateSnapshots: (characterId: string) => finalizedCharacters.listStateSnapshots(characterId),
     readChapterCharacterStateSnapshot: (snapshotId: string, characterId: string) => finalizedCharacters.readStateSnapshot(snapshotId, characterId),
     readChapterCharacterStateContinuity: () => finalizedCharacters.readStateContinuity(),
+    readChapterCharacterStateCache: () => finalizedCharacters.readStateCache(),
     prepareReviewRevision: (request: PrepareReviewRevisionRequest) => reviewRevisions.prepare(request),
     commitReview: (request: ReviewGenerationCommitRequest) => reviewRevisions.commitReview(request, assertSourcesCurrent),
     commitRevision: (request: RevisionGenerationCommitRequest) => reviewRevisions.commitRevision(request, assertSourcesCurrent),

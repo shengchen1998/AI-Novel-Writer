@@ -93,6 +93,8 @@ function SessionSuggestions({ session }: { session: ProjectSessionContext }) {
             <li className="cast-suggestion cast-suggestion-open" data-kind="state">
               <div className="cast-suggestion-compare">
                 <strong>{states.candidate.characterName} · {text(...STATE_FIELD_LABELS[states.candidate.field])}</strong>
+                <span>{text('待确认 · ', 'Pending confirmation · ')}{states.candidate.reason === 'legacy-protected'
+                  ? text('Legacy 值保护', 'Legacy value protection') : text('作者值保护', 'Author value protection')}</span>
                 <span>{text('当前：', 'Current: ')}{states.current || text('空', 'Empty')}</span>
                 <span>{text('建议：', 'Suggested: ')}{states.candidate.value}</span>
               </div>

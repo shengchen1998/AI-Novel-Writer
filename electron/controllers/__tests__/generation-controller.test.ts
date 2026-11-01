@@ -316,7 +316,8 @@ describe('generation public IPC with actual project authority and SQLite', () =>
     const artifact = receipt.run.artifacts.at(-1)!
     getProjectDb()!.prepare('UPDATE characters SET cs_location=? WHERE character_id=?').run('作者确认的新地点', f.characterId)
     await expect(invoke('finalization-generation:commit', { handle: run.handle,
-      artifact: { artifactId: artifact.artifactId, revision: artifact.revision, textHash: artifact.textHash } })).rejects.toThrow('FINALIZED_CHARACTER_FIELD_CONFLICT')
+      artifact: { artifactId: artifact.artifactId, revision: artifact.revision, textHash: artifact.textHash } }))
+      .resolves.toMatchObject({ cacheStatus: 'rebuild-required', cacheConflict: true })
     expect((await invoke('generation:read', run.handle)).candidates).toHaveLength(1)
     expect(getProjectDb()!.prepare('SELECT cs_location FROM characters WHERE character_id=?').pluck().get(f.characterId)).toBe('作者确认的新地点')
   })

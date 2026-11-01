@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { ipc } from '../../../services/ipc-client'
 import { useLocaleStore } from '../../../stores/locale-store'
-import type { ChapterCharacterStateContinuityEntry } from '../../../shared/chapter-character-state-snapshot'
+import type { ChapterCharacterStateCacheStatus, ChapterCharacterStateContinuityEntry } from '../../../shared/chapter-character-state-snapshot'
 
 export default function CharacterStateContinuity() {
   const text = useLocaleStore(s => s.text)
   const [entries, setEntries] = useState<ChapterCharacterStateContinuityEntry[]>([])
+  const [cache, setCache] = useState<ChapterCharacterStateCacheStatus | null>(null)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
 
   useEffect(() => {
@@ -16,6 +17,11 @@ export default function CharacterStateContinuity() {
       setStatus('ready')
     }).catch(() => {
       if (active) setStatus('error')
+    })
+    void ipc.invoke('finalized-character:read-state-cache').then(result => {
+      if (active) setCache(result)
+    }).catch(() => {
+      if (active) setCache(null)
     })
     return () => { active = false }
   }, [])
@@ -31,6 +37,18 @@ export default function CharacterStateContinuity() {
   const predecessor = latestValid?.snapshot?.baseline.predecessor
   return (
     <section className="cast-continuity" aria-label={text('章节状态连续性', 'Chapter-state continuity')}>
+      {cache?.status === 'rebuild-required' && (
+        <p className="run-note" data-tone="danger">{text(
+          '缓存待重建；章节快照和作者编辑已保留，当前派生状态不可用。',
+          'Cache rebuild required. Chapter snapshots and author edits are preserved; current derived state is unavailable.',
+        )}</p>
+      )}
+      {cache?.status === 'invalid' && (
+        <p className="run-note" data-tone="danger">{text(
+          '连续状态链尚未到达最新定稿，当前派生缓存不可用。',
+          'The continuous state chain has not reached the latest finalization; the current derived cache is unavailable.',
+        )}</p>
+      )}
       {latestValid?.snapshot && (
         <div>
           <p className="run-note">{text(
