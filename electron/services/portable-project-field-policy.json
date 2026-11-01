@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 7,
+  "schemaVersion": 8,
   "rules": {
     "D": ["preserve-domain", "signed-domain-value", "portable-domain-copy"],
     "H": ["historical-nonreplayable", "nonreplayable-history", "portable-history-projector"],
@@ -17,6 +17,11 @@
     "character_avatar_assets", "character_avatar_unresolved"
   ],
   "m06Tables": ["review_cycle_merges"],
+  "m07Tables": [
+    "chapter_character_state_snapshots",
+    "chapter_character_state_snapshot_characters",
+    "chapter_character_state_snapshot_fields"
+  ],
   "optionalFields": ["characters.avatar"],
   "deltaCharacterFields": ["character_id", "legacy_key", "static_provenance", "identity_revision", "retired"],
   "signedOverrides": {
@@ -76,6 +81,9 @@
     "blueprint_commit_operations": {"operation_id":"H","payload_hash":"R","mode":"H","start_chapter":"H","end_chapter":"H","character_sync_input":"R","committed_at":"H"},
     "blueprints": {"chapter_number":"D","title":"D","role":"D","purpose":"D","key_events":"D","characters":"D","suspense_hook":"D","user_guidance":"D","notes":"D","notes_updated_at":"D","created_at":"D","updated_at":"D"},
     "chapter_deletion_operations": {"operation_id":"H","draft_id":"H","chapter_number":"H","chapter_title":"H","finalization_id":"H","target_file_name":"P","knowledge_document_id":"H","post_process_run_ids":"H","manuscript_status":"H","manuscript_error":"R","knowledge_status":"H","knowledge_error":"R","legacy_knowledge_authorization":"X","legacy_knowledge_authorized_at":"X","status":"H","attempt_count":"H","created_at":"H","updated_at":"H","completed_at":"H"},
+    "chapter_character_state_snapshots": {"snapshot_id":"H","operation_id":"H","finalization_id":"H","draft_id":"H","chapter_number":"H","chapter_title":"H","content_hash":"H","schema_version":"H","snapshot_hash":"H","created_at":"H"},
+    "chapter_character_state_snapshot_characters": {"snapshot_id":"H","character_id":"H","display_name_snapshot":"H","aliases_json":"H","updated_at_chapter":"H"},
+    "chapter_character_state_snapshot_fields": {"snapshot_id":"H","character_id":"H","field":"H","value":"H","provenance_kind":"H","known_at_chapter":"H","provenance_json":"H","evidence_json":"H"},
     "character_aliases": {"character_id":"D","name":"D","source_key":"D","valid_from":"D","valid_through":"D"},
     "character_avatar_assets": {"character_id":"A","asset_revision":"A","relative_path":"A","content_hash":"A","mime":"A","byte_size":"A","source_reference":"A"},
     "character_avatar_unresolved": {"record_id":"A","disposition":"A","source_reference":"A","source_relative_path":"A","preserved_relative_path":"A","content_hash":"A","mime":"A","byte_size":"A","candidate_character_ids_json":"A"},

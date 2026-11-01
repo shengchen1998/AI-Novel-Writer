@@ -213,7 +213,7 @@ async function currentProjectState(name, roots, session, source) {
     assert.equal(dbBody(targetRoot), initialBody)
     assert.equal(modelCallCount(targetRoot), 0)
     assert.deepEqual(sourceFiles(source.sourceRoot), source.before)
-    pass(`${name}-schema7-import`, 'U02.A07', 'The library 导入旧项目副本 imported the schema0 project into schema7 with exact title, draft body and new copy identity; old source bytes stayed unchanged',
+    pass(`${name}-schema8-import`, 'U02.A07', 'The library 导入旧项目副本 imported the schema0 project into schema8 with exact title, draft body and new copy identity; old source bytes stayed unchanged',
       'legacy-appearance-with-project-state-to-stage')
     let body = await stage.openChapter(page, 1)
     assert.equal(await stage.proseBody(body), initialBody)
@@ -228,7 +228,7 @@ async function currentProjectState(name, roots, session, source) {
     assert.equal(dbBody(targetRoot), savedBody)
     assert.equal(modelCallCount(targetRoot), 0)
     assert.deepEqual(sourceFiles(source.sourceRoot), source.before)
-    pass(`${name}-schema7-save`, 'U02.A07', 'Ctrl S in the stage chapter editor saved the exact edited body in the imported schema7 copy without changing the old source',
+    pass(`${name}-schema8-save`, 'U02.A07', 'Ctrl S in the stage chapter editor saved the exact edited body in the imported schema8 copy without changing the old source',
       'legacy-appearance-with-project-state-to-stage')
     await session.app.close()
     session = await launch(roots)
@@ -239,7 +239,7 @@ async function currentProjectState(name, roots, session, source) {
     assert.equal(dbBody(targetRoot), savedBody)
     assert.equal(modelCallCount(targetRoot), 0)
     assert.deepEqual(sourceFiles(source.sourceRoot), source.before)
-    pass(`${name}-schema7-reopen`, 'U02.A07', 'A new process reopened the same copy identity from the library with the exact saved body; old source bytes stayed unchanged',
+    pass(`${name}-schema8-reopen`, 'U02.A07', 'A new process reopened the same copy identity from the library with the exact saved body; old source bytes stayed unchanged',
       'legacy-appearance-with-project-state-to-stage')
   } finally { await session.app.close() }
 }
@@ -260,7 +260,7 @@ async function main() {
   fs.writeFileSync(path.join(scratchRoot, '.vibe-owner.json'), JSON.stringify({ owner: 'codex/f05-u02-a07',
     sourceProject: repository, createdAt: new Date().toISOString(), ttlHours: 72,
     cleanupCommand: `Remove-Item -LiteralPath '${scratchRoot}' -Recurse -Force`,
-    retainReason: 'Synthetic appearance migration and schema0-to-schema7 stage import evidence' }, null, 2))
+    retainReason: 'Synthetic appearance migration and schema0-to-schema8 stage import evidence' }, null, 2))
   const receipt = { outcome: 'FAIL', qualification: 'F05_U02_DEFAULT_A02_A07_CURRENT', evidenceLevel: 'electron',
     shell: 'stage', testedSha, executionHead: git('rev-parse', 'HEAD'),
     driverSha256, artifactHashes: { executable: expectedExeSha, asar: expectedAsarSha }, packageRoot: packageDir,
@@ -373,11 +373,11 @@ async function main() {
         pass(`${name}-stage-after-migration`, 'U02.A02', 'The same migrated profile reopens in the dark stage with its zoom and fonts; legacy bytes retained',
           'legacy-theme-keys-to-stage')
       } catch (error) { await session.app.close(); throw error }
-      currentStep = `${name}-schema7-import-save-reopen`
+      currentStep = `${name}-schema8-import-save-reopen`
       await currentProjectState(name, roots, session, source)
     }
     assert.equal(sha256(fileURLToPath(import.meta.url)), driverSha256, 'driver changed during run')
-    const required = ['v1', 'v2'].flatMap(name => [`${name}-schema7-import`, `${name}-schema7-save`, `${name}-schema7-reopen`])
+    const required = ['v1', 'v2'].flatMap(name => [`${name}-schema8-import`, `${name}-schema8-save`, `${name}-schema8-reopen`])
     assert(required.every(id => steps.some(step => step.stepId === id && step.outcome === 'PASS')))
     assert(['fresh-default-stage', 'galaxy-stage-after-migration', 'paper-stage-after-migration', 'v1-stage-after-migration', 'v2-stage-after-migration']
       .every(id => steps.some(step => step.stepId === id && step.outcome === 'PASS')))
@@ -398,5 +398,5 @@ async function main() {
   }
 }
 
-if (process.argv.includes('--help')) process.stdout.write('Pass --package-dir, --package-source-sha, --exe-sha256 and --asar-sha256 for the fixed package: fresh, pre-RD-10 galaxy/paper and legacy v1/v2 appearance migrations, then schema0-to-schema7 import in the stage.\n')
+if (process.argv.includes('--help')) process.stdout.write('Pass --package-dir, --package-source-sha, --exe-sha256 and --asar-sha256 for the fixed package: fresh, pre-RD-10 galaxy/paper and legacy v1/v2 appearance migrations, then schema0-to-schema8 import in the stage.\n')
 else main().catch(error => { console.error(error); process.exitCode = 1 })

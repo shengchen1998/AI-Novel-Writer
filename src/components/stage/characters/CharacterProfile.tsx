@@ -6,6 +6,7 @@ import { useCharacterStore, type CharacterCard } from '../../../stores/character
 import { useLocaleStore } from '../../../stores/locale-store'
 import { authorStateEdit, CHARACTER_STATE_FIELDS, stateFieldView } from '../../editor/character-state-fields'
 import RelationshipGraph from '../../editor/RelationshipGraph'
+import CharacterStateHistory from './CharacterStateHistory'
 import { useCharacterAvatar } from '../../editor/use-character-avatar'
 import { useCharacterProfile } from '../../editor/use-character-profile'
 import { Button } from '../../ui/Button'
@@ -15,7 +16,7 @@ import { Menu } from '../../ui/Menu'
 import { SegmentedControl } from '../../ui/SegmentedControl'
 import { pluralEn } from '../../../shared/plural-en'
 
-type ProfileView = 'edit' | 'state' | 'graph'
+type ProfileView = 'edit' | 'state' | 'history' | 'graph'
 type TextField = Exclude<keyof CharacterCard, 'name' | 'characterId' | 'role' | 'currentState'>
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: (id: string) => ReactNode }) {
@@ -31,7 +32,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   )
 }
 
-/** 角色档案：基础设定、当前状态、关系图谱三个视图，保存与删除。数据与操作沿用 CharacterEditor 的 useCharacterProfile。 */
+/** 角色档案：基础设定、当前状态、章节状态、关系图谱四个视图，保存与删除。数据与操作沿用 CharacterEditor 的 useCharacterProfile。 */
 export default function CharacterProfile({ projectKey }: { projectKey: string }) {
   const text = useLocaleStore(s => s.text)
   const profile = useCharacterProfile(projectKey)
@@ -67,6 +68,7 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
   const viewOptions = [
     { value: 'edit' as const, label: text('基础设定', 'Profile') },
     { value: 'state' as const, label: text('当前状态', 'Current state') },
+    { value: 'history' as const, label: text('章节状态', 'Chapter states') },
     { value: 'graph' as const, label: text('关系图谱', 'Relationship graph') },
   ]
 
@@ -150,6 +152,10 @@ export default function CharacterProfile({ projectKey }: { projectKey: string })
             description={profile.lastError ?? text('在左侧名单里选一位角色查看和编辑档案，或新建一位。', 'Choose someone from the cast on the left, or add a new character.')}
             action={<Button variant="secondary" disabled={identityBusy || !dataReady} onClick={() => useCharacterStore.getState().addCharacter()}>{text('新建角色', 'New character')}</Button>}
           />
+        ) : view === 'history' ? (
+          card.characterId && !card.characterId.startsWith('draft:')
+            ? <CharacterStateHistory key={card.characterId} characterId={card.characterId} />
+            : <p>{text('保存角色后可查看章节状态快照。', 'Save the character to view chapter state snapshots.')}</p>
         ) : view === 'state' ? (
           <div className="cast-grid">
             {CHARACTER_STATE_FIELDS.map(([field, zh, en]) => {
