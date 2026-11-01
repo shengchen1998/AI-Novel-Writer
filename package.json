@@ -98,6 +98,7 @@
     "electron-builder": "^26.15.0",
     "esbuild": "^0.28.1",
     "eslint": "^8.57.1",
+    "eslint-formatter-rdjson": "^1.0.6",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.19",
     "eslint-plugin-storybook": "^10.6.2",
