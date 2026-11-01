@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { page } from 'vitest/browser'
+import { page, userEvent } from 'vitest/browser'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
@@ -104,16 +104,72 @@ afterEach(async () => {
 })
 
 describe('单章视图的主按钮随五种状态变化', () => {
-  it('待写：主按钮是写作此章，按本章蓝图启动写作工作流', async () => {
+  it('待写：主按钮是 AI 写作，按本章蓝图启动写作工作流', async () => {
     await mount()
     await act(async () => openChapterPlan(3, BLUEPRINT.title, SESSION))
     await expect.element(page.getByRole('heading', { name: '本章蓝图' })).toBeVisible()
-    await click('写作此章')
+    await click('AI 写作')
     await vi.waitFor(() => expect(startWorkflow).toHaveBeenCalledOnce())
     const [chapterInfo] = workflows.createChapterWorkflow.mock.calls[0]
     expect({ number: chapterInfo.chapterNumber, title: chapterInfo.title, purpose: chapterInfo.purpose, characters: chapterInfo.characters })
       .toEqual({ number: 3, title: '雨夜车站', purpose: BLUEPRINT.purpose, characters: ['林舟', '老周'] })
     expect(started()[0].type).toBe('chapter_creation')
+  })
+
+  it('待写：自己写创建空白作者草稿，输入与纯文本粘贴保存到同一稿，不产生生成运行', async () => {
+    useLLMStore.setState({ models: [], defaultModelId: null, loaded: true })
+    await mount()
+    await act(async () => openChapterPlan(3, BLUEPRINT.title, SESSION))
+    await expect.element(page.getByRole('button', { name: 'AI 写作', exact: true })).toBeVisible()
+    await expect.element(page.getByRole('button', { name: '自己写', exact: true })).toBeVisible()
+
+    await click('自己写')
+    await vi.waitFor(() => expect(backend.writes('db:draft-create')).toHaveLength(1))
+    const [request] = backend.writes('db:draft-create')[0] as [Record<string, unknown>]
+    expect(request).toEqual({ chapterNumber: 3, version: 1, source: 'author', content: '', wordCount: 0, sourceDependencies: [] })
+    await expect.element(page.getByRole('button', { name: 'AI 审稿', exact: true })).toBeVisible()
+    await expect.element(page.getByText('作者提供', { exact: true })).toBeVisible()
+    expect(page.getByRole('button', { name: '自己写', exact: true }).elements()).toHaveLength(0)
+    expect(page.getByText('尚无草稿', { exact: false }).elements()).toHaveLength(0)
+    expect(activeTab()).toMatchObject({ chapterNumber: 3, content: '', draftStatus: 'draft' })
+    expect(activeTab()?.dirty).toBeFalsy()
+    expect(activeTab()?.content).not.toContain(BLUEPRINT.purpose)
+
+    const prose = host!.querySelector<HTMLElement>('.stage-ch-prose .cm-content')!
+    await act(async () => prose.focus())
+    await act(async () => userEvent.keyboard('First line.'))
+    const pasted = '\n\n**Keep**  raw  text\n第二行  '
+    const clipboard = new DataTransfer()
+    clipboard.setData('text/plain', pasted)
+    clipboard.setData('text/html', '<strong>Must not replace the plain text</strong>')
+    await act(async () => prose.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: clipboard })))
+    const expected = `First line.${pasted}`
+    expect(activeTab()?.content).toBe(expected)
+
+    await act(async () => userEvent.keyboard('{Control>}s{/Control}'))
+    await vi.waitFor(() => expect(backend.writes('db:draft-update-content')).toHaveLength(1))
+    await vi.waitFor(() => expect(activeTab()?.dirty).toBe(false))
+    expect(backend.state.drafts).toHaveLength(1)
+    expect(backend.state.drafts[0]).toMatchObject({ version: 1, status: 'draft', source: 'author', content: expected, sourceDependencies: [] })
+    expect(backend.state.drafts[0]?.id).toBe(activeTab()?.draftId)
+    expect(startWorkflow).not.toHaveBeenCalled()
+    expect(backend.state.calls.filter(call => call.channel.startsWith('generation:'))).toEqual([])
+  })
+
+  it('待写：英文入口可用键盘激活，来源显示为作者提供', async () => {
+    useLocaleStore.setState({ locale: 'en-US' })
+    useLLMStore.setState({ models: [], defaultModelId: null, loaded: true })
+    await mount()
+    await act(async () => openChapterPlan(3, BLUEPRINT.title, SESSION))
+    await expect.element(page.getByRole('button', { name: 'AI writing', exact: true })).toBeVisible()
+    const manual = page.getByRole('button', { name: 'Write it myself', exact: true })
+    await expect.element(manual).toBeVisible()
+    await act(async () => manual.element().focus())
+    await act(async () => userEvent.keyboard('{Enter}'))
+
+    await vi.waitFor(() => expect(backend.writes('db:draft-create')).toHaveLength(1))
+    await expect.element(page.getByText('Author-provided', { exact: true })).toBeVisible()
+    expect(startWorkflow).not.toHaveBeenCalled()
   })
 
   it('草稿：主按钮是 AI 审稿，按勾选的检查维度对当前正文启动审稿', async () => {

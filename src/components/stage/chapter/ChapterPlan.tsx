@@ -1,14 +1,18 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { blueprintWritePrefill } from '../../../services/workflows/chapter-write-launch'
 import type { EditorTab } from '../../../stores/editor-store'
+import { useDraftStore } from '../../../stores/draft-store'
 import { useLocaleStore } from '../../../stores/locale-store'
 import { navigate } from '../../../stores/navigation/navigation-intents'
 import { useStageStore } from '../../../stores/navigation/stage-store'
 import { openBuiltinEditor } from '../../../stores/open-builtin-editor'
 import { useProjectStore } from '../../../stores/project-store'
-import { captureProjectSession } from '../../project-session-gate'
+import { ipc } from '../../../services/ipc-client'
+import { displayedErrorMessage } from '../../../i18n/app-errors'
+import { captureProjectSession, isProjectSessionCurrent } from '../../project-session-gate'
 import { Button } from '../../ui/Button'
 import { Notice } from '../../ui/Notice'
+import { toast } from '../../ui/Toast'
 import { useStageView } from '../use-stage-work'
 import WriteChapterPopover from '../write/WriteChapterPopover'
 import { openDraftInChapterView, swapChapterTab } from './chapter-tab-routing'
@@ -18,7 +22,7 @@ import { useChapterBlueprint } from './use-chapter-blueprint'
 import { pluralEn } from '../../../shared/plural-en'
 
 /**
- * 待写章的单章视图：本章蓝图只读展示，主按钮「写作此章」按蓝图写，箭头弹层只改本次模型与指导。
+ * 待写章的单章视图：本章蓝图只读展示，AI 按蓝图写，作者也可以从空白正文开始。
  * 这一章有了稿（写完了，或在别处写好）就在这个标签的位置换成那一稿。
  */
 export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: EditorTab; chapterNumber: number; projectKey: string }) {
@@ -30,6 +34,7 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
   const { chapters } = useStageView()
   const row = chapters.find(candidate => candidate.number === chapterNumber)
   const draft = row?.draft ?? null
+  const [creatingAuthorDraft, setCreatingAuthorDraft] = useState(false)
 
   useEffect(() => {
     const session = captureProjectSession(useProjectStore.getState().currentProject)
@@ -45,6 +50,27 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
 
   const editBlueprint = () => openBuiltinEditor('chapter-card-editor', text('章节蓝图', 'Chapter blueprint'), 'chapter-card', undefined, chapterNumber)
   const target = wordsPerChapter && wordsPerChapter > 0 ? wordsPerChapter.toLocaleString(locale) : null
+
+  const createAuthorDraft = async () => {
+    const session = captureProjectSession(useProjectStore.getState().currentProject)
+    if (!session || creatingAuthorDraft) return
+    setCreatingAuthorDraft(true)
+    try {
+      const created = await ipc.invokeWithProjectSession(session, 'db:draft-create', {
+        chapterNumber, version: 1, source: 'author', content: '', wordCount: 0, sourceDependencies: [],
+      }, session.projectPath)
+      if (!created.success || created.id === undefined) throw new Error(created.error || text('创建作者草稿失败', 'Could not create the author draft'))
+      await useDraftStore.getState().loadChapterDrafts(chapterNumber, session.projectPath, session)
+      if (!isProjectSessionCurrent(session)) return
+      const draft = useDraftStore.getState().draftsByChapter[chapterNumber]?.find(candidate => candidate.id === created.id)
+      if (!draft) throw new Error(text('创建后没能读到作者草稿，请重新打开本章', 'The author draft was created but could not be read. Reopen this chapter.'))
+      await swapChapterTab(tab.id, () => openDraftInChapterView(draft, row?.title ?? '', session))
+    } catch (error) {
+      toast.error(displayedErrorMessage(useLocaleStore.getState().locale, error, text('创建作者草稿失败', 'Could not create the author draft')))
+    } finally {
+      setCreatingAuthorDraft(false)
+    }
+  }
 
   return (
     <div className="stage-ch" data-focus={focus || undefined}>
@@ -62,16 +88,17 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
               </span>
             )}
           />
-          {blueprint && (
-            <div className="stage-ch-actions">
-              <WriteChapterPopover chapterNumber={chapterNumber} blueprint={blueprintWritePrefill(blueprint)} label={text('写作此章', 'Write this chapter')} align="start" />
-              <span className="stage-ch-hint">
-                {row?.running
+          <div className="stage-ch-actions">
+            {blueprint && <WriteChapterPopover chapterNumber={chapterNumber} blueprint={blueprintWritePrefill(blueprint)} label={text('AI 写作', 'AI writing')} align="start" />}
+            <Button variant="secondary" disabled={creatingAuthorDraft} onClick={() => void createAuthorDraft()}>{text('自己写', 'Write it myself')}</Button>
+            <span className="stage-ch-hint">
+              {blueprint
+                ? row?.running
                   ? text('这一章正在写，完成后会在这里换成草稿', 'This chapter is being written; the draft replaces this page when it is done')
-                  : text('按本章蓝图写作，不再重复填写参数', 'Writes from this chapter’s blueprint; nothing to fill in again')}
-              </span>
-            </div>
-          )}
+                  : text('AI 按本章蓝图写作，也可以自己从空白正文开始', 'AI writes from this chapter’s blueprint, or you can start with a blank page')
+                : text('从空白正文开始，输入或粘贴后按现有方式保存', 'Start with a blank page; type or paste, then save as usual')}
+            </span>
+          </div>
           <div className="stage-ch-notices">
             <DeletionCleanupNotices projectKey={projectKey} chapterNumber={chapterNumber} />
             {row?.running && (
@@ -121,7 +148,7 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
           {blueprint && !row?.running && (
             <div className="stage-ch-blank">
               <b>{text('这一章还是空白', 'This chapter is still blank')}</b>
-              {text('点「写作此章」，AI 会按上面的蓝图写出草稿。', 'Choose “Write this chapter” and AI drafts it from the blueprint above.')}
+              {text('点「AI 写作」按上面的蓝图生成，或点「自己写」从空白正文开始。', 'Choose “AI writing” to draft from the blueprint above, or “Write it myself” to start with a blank page.')}
             </div>
           )}
         </article>

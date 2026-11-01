@@ -314,7 +314,7 @@ export class DraftRepository {
     static create(params: {
         chapterNumber: number
         version?: number
-        source: 'write' | 'rewrite'
+        source: 'write' | 'rewrite' | 'author'
         content: string
         wordCount: number
         sourceDependencies?: DraftSourceDependency[]

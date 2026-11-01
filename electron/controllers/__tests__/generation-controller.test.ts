@@ -84,6 +84,32 @@ function stream(content = '中文候选', reasoning?: string) {
   return fetch
 }
 describe('generation public IPC with actual project authority and SQLite', () => {
+  it('round-trips an empty author draft without a generation run and preserves existing source values', async () => {
+    vi.stubGlobal('window', { aiNovelAPI: { invoke: (channel: string, ...args: unknown[]) => mocks.handlers.get(channel)!({ sender }, ...args) } })
+    const created = await ipc.invokeWithProjectSession(session, 'db:draft-create', {
+      chapterNumber: 1, version: 1, source: 'author', content: '', wordCount: 0, sourceDependencies: [],
+    }, session.projectPath)
+
+    expect(created).toMatchObject({ success: true })
+    expect(await ipc.invokeWithProjectSession(session, 'db:draft-get-full', created.id!, session.projectPath)).toMatchObject({
+      chapterNumber: 1, version: 1, status: 'draft', source: 'author', content: '', wordCount: 0,
+      sourceDependencies: [], dependenciesStale: false,
+    })
+    expect(getProjectDb()!.prepare('SELECT COUNT(*) FROM generation_runs').pluck().get()).toBe(0)
+
+    for (const source of ['write', 'rewrite'] as const) {
+      const existing = await ipc.invokeWithProjectSession(session, 'db:draft-create', {
+        chapterNumber: 2, version: source === 'write' ? 1 : 2, source, content: `${source} 正文`, wordCount: 7,
+      }, session.projectPath)
+      expect((await ipc.invokeWithProjectSession(session, 'db:draft-get-full', existing.id!, session.projectPath))?.source).toBe(source)
+    }
+    closeProjectDatabase()
+    initProjectDatabase(session.projectPath)
+    expect(await ipc.invokeWithProjectSession(session, 'db:draft-get-full', created.id!, session.projectPath)).toMatchObject({
+      source: 'author', content: '', sourceDependencies: [],
+    })
+  })
+
   it.each(['review-chapter', 'refine-draft', 'refine-from-review'] as const)('routes %s through the renderer client, registered IPC, owner and actual formal repository', async operation => {
     const body = '林岚到达海港，发现了留下的信。'
     const revisedBody = '林岚到达海港，发现了父亲留下的信。'

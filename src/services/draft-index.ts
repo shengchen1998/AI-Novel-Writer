@@ -22,7 +22,7 @@ export interface DraftMeta {
   wordCount?: number
   createdAt: string
   updatedAt?: string
-  source: 'write' | 'rewrite'
+  source: 'write' | 'rewrite' | 'author'
 
   // 为了尽量不改 UI，我们伪造这两个字段
   filePath: string

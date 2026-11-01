@@ -108,7 +108,7 @@ export function applyBaselineTables(db: BetterSqlite3.Database): void {
       chapter_number INTEGER NOT NULL,            -- 归属章节
       version INTEGER NOT NULL,                   -- v1, v2...
       status TEXT DEFAULT 'draft',                -- draft/revised/finalized/archived
-      source TEXT DEFAULT 'write',                -- write/rewrite
+      source TEXT DEFAULT 'write',                -- write/rewrite/author
       content_id INTEGER NOT NULL,                -- FK -> contents
       word_count INTEGER DEFAULT 0,               -- 字数缓存
       source_dependencies TEXT NOT NULL DEFAULT '[]', -- ordered draft ids + frozen prose hashes
