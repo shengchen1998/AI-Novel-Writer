@@ -164,8 +164,8 @@ describe('打开作品时的落点', () => {
       .toEqual({ type: 'chapter', chapter: 1 })
   })
 
-  it('大纲没写完、只有一份空的当前稿、没有蓝图：空稿不算开始，落在架构', async () => {
-    expect(await landWith([], { 1: [{ ...draft(1, 'draft'), wordCount: 0 }] })).toEqual({ type: 'world-building', chapter: undefined })
+  it('大纲没写完、只有一份空白作者草稿、没有蓝图：空稿算正文已开始，落在这一章', async () => {
+    expect(await landWith([], { 1: [{ ...draft(1, 'draft'), source: 'author', wordCount: 0 }] })).toEqual({ type: 'chapter', chapter: 1 })
   })
 
   it('上一次打开留下的架构与蓝图数据不算这次的', async () => {

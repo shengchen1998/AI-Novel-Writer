@@ -251,6 +251,7 @@ const ERROR_KEYS = {
   NARRATIVE_THREAD_EVIDENCE_NOT_IN_SOURCE: 'error.narrativeThreadEvidenceNotInSource',
   DRAFT_NOT_FOUND: 'error.draftNotFound',
   DRAFT_NOT_WRITABLE: 'error.draftFinalizedReadOnly',
+  DRAFT_AUTHOR_CREATE_CONFLICT: 'error.draftAuthorCreateConflict',
   DRAFT_FINALIZED_READ_ONLY: 'error.draftFinalizedReadOnly',
   SUPERSEDED_DRAFT_DELETE_FORBIDDEN: 'error.supersededDraftDeleteForbidden',
   FINALIZATION_SUPERSEDED: 'error.finalizationSuperseded',

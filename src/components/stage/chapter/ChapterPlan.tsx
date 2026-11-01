@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { blueprintWritePrefill } from '../../../services/workflows/chapter-write-launch'
 import type { EditorTab } from '../../../stores/editor-store'
 import { useDraftStore } from '../../../stores/draft-store'
@@ -36,6 +36,7 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
   const row = chapters.find(candidate => candidate.number === chapterNumber)
   const draft = row?.draft ?? null
   const [creatingAuthorDraft, setCreatingAuthorDraft] = useState(false)
+  const creatingAuthorDraftRef = useRef(false)
 
   useEffect(() => {
     const session = captureProjectSession(useProjectStore.getState().currentProject)
@@ -54,13 +55,18 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
 
   const createAuthorDraft = async () => {
     const session = captureProjectSession(useProjectStore.getState().currentProject)
-    if (!session || creatingAuthorDraft) return
+    if (!session || row?.running || creatingAuthorDraftRef.current) return
+    creatingAuthorDraftRef.current = true
     setCreatingAuthorDraft(true)
     try {
       const created = await ipc.invokeWithProjectSession(session, 'db:draft-create', {
-        chapterNumber, version: 1, source: 'author', content: '', wordCount: 0, sourceDependencies: [],
+        chapterNumber, version: 1, source: 'author', content: '', wordCount: 0, sourceDependencies: [], onlyWhenChapterEmpty: true,
       }, session.projectPath)
-      if (!created.success || created.id === undefined) throw new Error(created.error || text('创建作者草稿失败', 'Could not create the author draft'))
+      if (!created.success || created.id === undefined) {
+        const failure = new Error(created.error || text('创建作者草稿失败', 'Could not create the author draft'))
+        await useDraftStore.getState().loadChapterDrafts(chapterNumber, session.projectPath, session)
+        throw failure
+      }
       await useDraftStore.getState().loadChapterDrafts(chapterNumber, session.projectPath, session)
       if (!isProjectSessionCurrent(session)) return
       const draft = useDraftStore.getState().draftsByChapter[chapterNumber]?.find(candidate => candidate.id === created.id)
@@ -69,6 +75,7 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
     } catch (error) {
       toast.error(displayedErrorMessage(useLocaleStore.getState().locale, error, text('创建作者草稿失败', 'Could not create the author draft')))
     } finally {
+      creatingAuthorDraftRef.current = false
       setCreatingAuthorDraft(false)
     }
   }
@@ -91,7 +98,7 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
           />
           <div className="stage-ch-actions">
             {blueprint && <WriteChapterPopover chapterNumber={chapterNumber} blueprint={blueprintWritePrefill(blueprint)} label={text('AI 写作', 'AI writing')} align="start" />}
-            <Button variant="secondary" disabled={creatingAuthorDraft} onClick={() => void createAuthorDraft()}>{text('自己写', 'Write it myself')}</Button>
+            <Button variant="secondary" disabled={creatingAuthorDraft || row?.running} aria-busy={creatingAuthorDraft} onClick={() => void createAuthorDraft()}>{text('自己写', 'Write it myself')}</Button>
             <span className="stage-ch-hint">
               {blueprint
                 ? row?.running

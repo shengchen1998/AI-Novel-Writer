@@ -164,6 +164,17 @@ describe('打开作品的落点不等审稿与修稿记录：落到哪个阶段�
     expect(open({ 12: reviewed, 13: reviewed, 14: merge })).toEqual(landed)
   })
 
+  it('空白作者草稿让正文阶段开始，但不会取代有正文未完成章的自动聚焦', () => {
+    const emptyAuthor = { ...draft(14, 4, 'draft'), source: 'author' as const, wordCount: 0 }
+    const emptyChapters = deriveChapters({ ...work, drafts: { 4: [emptyAuthor] } })
+    const stages = deriveStages({ ...work, drafts: { 4: [emptyAuthor] } }, emptyChapters)
+
+    expect(emptyChapters.find(row => row.number === 4)?.phase).toBe('draft')
+    expect(stages.at(-1)?.progress).toEqual({ state: 'active', ratio: 0 })
+    const withProse = deriveChapters({ ...work, drafts: { 2: [draft(12, 2, 'reviewed')], 4: [emptyAuthor] } })
+    expect(focusChapter(withProse)?.number).toBe(2)
+  })
+
   it('一章有定稿、之后又新建了一份空草稿：仍算写过；没有蓝图、大纲没写完也落在这一章的正文', () => {
     const emptyAfterFinal = [draft(11, 1, 'finalized'), { ...draft(12, 1, 'draft'), version: 2, wordCount: 0 }]
     const open = (drafts: WorkFacts['drafts']) => {
