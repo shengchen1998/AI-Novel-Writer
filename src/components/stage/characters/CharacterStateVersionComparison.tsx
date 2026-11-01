@@ -4,12 +4,12 @@ import { useLocaleStore } from '../../../stores/locale-store'
 import type {
   ChapterCharacterStateSnapshotDiff,
   ChapterCharacterStateSnapshotField,
-  ChapterCharacterStateSnapshotValidity,
   ChapterCharacterStateSnapshotVersionSummary,
 } from '../../../shared/chapter-character-state-snapshot'
 import type { PendingFinalizedCharacterStateCandidateSummary } from '../../../shared/finalized-continuity'
 import { CHARACTER_STATE_FIELDS } from '../../editor/character-state-fields'
 import { Button } from '../../ui/Button'
+import { CharacterStateFieldContent, CharacterStateValidity } from './CharacterStateMetadata'
 
 export default function CharacterStateVersionComparison({ characterId, summaries, pendingCandidates }: {
   characterId: string
@@ -39,40 +39,11 @@ export default function CharacterStateVersionComparison({ characterId, summaries
     `第 ${summary.source.chapterNumber} 章 · ${summary.chapterTitle} · ${summary.source.finalizationId}`,
     `Chapter ${summary.source.chapterNumber} · ${summary.chapterTitle} · ${summary.source.finalizationId}`,
   )
-  const validityLabel = (validity: ChapterCharacterStateSnapshotValidity) => {
-    if (validity === 'valid') return text('当前有效', 'Currently valid')
-    if (validity === 'superseded') return text('已取代', 'Superseded')
-    if (validity === 'waiting-predecessor') return text('等待前驱', 'Waiting for predecessor')
-    return text('已失效', 'Invalid')
-  }
-  const sourceLabel = (kind: ChapterCharacterStateSnapshotField['provenance']['kind']) => {
-    if (kind === 'author') return text('作者输入', 'Author input')
-    if (kind === 'derived') return text('定稿派生', 'Derived from finalized prose')
-    return text('Legacy（来源未知）', 'Legacy · Unknown source')
-  }
   const renderField = (label: string, field: ChapterCharacterStateSnapshotField, finalizationId: string) => (
     <div className="cast-history-diff-side">
       <h4>{label}</h4>
-      <p className="cast-history-value">{field.value || '—'}</p>
-      <p className="cast-history-meta">
-        <span>{sourceLabel(field.provenance.kind)}</span>
-        <span>{field.knownAtChapter === null
-          ? text('已知时点未知', 'Known time unknown')
-          : text(`已知时点：第 ${field.knownAtChapter} 章`, `Known at chapter ${field.knownAtChapter}`)}</span>
-        {pendingCandidates.some(candidate => candidate.finalizationId === finalizationId
-          && candidate.characterId === characterId && candidate.field === field.field) && (
-          <span>{text('待确认', 'Pending confirmation')}</span>
-        )}
-      </p>
-      {field.provenance.kind === 'derived' && (
-        <p className="cast-history-field-source"><code>{field.provenance.source.finalizationId}</code></p>
-      )}
-      {field.evidence && (
-        <div className="cast-history-evidence">
-          <h4>{text('正文证据', 'Finalized prose evidence')}</h4>
-          <blockquote>{field.evidence.text}</blockquote>
-        </div>
-      )}
+      <CharacterStateFieldContent field={field} characterId={characterId}
+        finalizationId={finalizationId} pendingCandidates={pendingCandidates} />
     </div>
   )
 
@@ -103,7 +74,7 @@ export default function CharacterStateVersionComparison({ characterId, summaries
           <header className="cast-history-diff-versions">
             {[diff.before, diff.after].map((side, index) => (
               <p key={side.snapshotId}>
-                {index === 0 ? text('起点', 'From') : text('终点', 'To')}：{versionLabel(side)} · {validityLabel(side.validity)}
+                {index === 0 ? text('起点', 'From') : text('终点', 'To')}：{versionLabel(side)} · <CharacterStateValidity validity={side.validity} />
               </p>
             ))}
           </header>

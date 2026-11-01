@@ -62,6 +62,32 @@ import { ProjectCoreRepository, type ProjectCoreSynopsisExpected, type ProjectCo
 // 尝试 id 都由 randomUUID 生成；recoverFrom 还拼进 nonce，只收 UUID，免得拼出别的尝试的 nonce。
 const ATTEMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 const graphOperations = { plot: 'plot-tree-snapshot', plan: 'narrative-thread-plan-candidate', event: 'narrative-thread-event-candidate' } as const
+type GenerationOperationAdmissionFlag = 'agent' | 'editor' | 'finalization' | 'rebuild' | 'graph' | 'legacy'
+interface GenerationOperationAdmission {
+  operations: readonly string[]
+  flag: GenerationOperationAdmissionFlag
+  error: string
+  childError?: string
+}
+const GENERATION_OPERATION_ADMISSIONS: readonly GenerationOperationAdmission[] = [
+  { operations: ['agent-round'], flag: 'agent', error: 'GENERATION_AGENT_ADMISSION_REQUIRED' },
+  { operations: ['editor-inline'], flag: 'editor', error: 'GENERATION_EDITOR_ADMISSION_REQUIRED', childError: 'GENERATION_EDITOR_CHILD_FORBIDDEN' },
+  { operations: ['finalized-chapter-notes', 'finalized-character-state'], flag: 'finalization', error: 'GENERATION_FINALIZATION_ADMISSION_REQUIRED' },
+  { operations: [CHAPTER_CHARACTER_STATE_REBUILD_OPERATION], flag: 'rebuild', error: 'GENERATION_CHARACTER_STATE_REBUILD_ADMISSION_REQUIRED' },
+  { operations: Object.values(graphOperations), flag: 'graph', error: 'GENERATION_GRAPH_ADMISSION_REQUIRED', childError: 'GENERATION_GRAPH_CHILD_FORBIDDEN' },
+  { operations: ['legacy-character-roster-repair'], flag: 'legacy', error: 'GENERATION_LEGACY_ADMISSION_REQUIRED', childError: 'GENERATION_LEGACY_CHILD_FORBIDDEN' },
+]
+function generationOperationAdmission(operation: string): GenerationOperationAdmission | undefined {
+  return GENERATION_OPERATION_ADMISSIONS.find(rule => rule.operations.includes(operation))
+}
+function assertGenerationOperationAdmission(operation: string, initialized: Readonly<Record<GenerationOperationAdmissionFlag, boolean>>): void {
+  const rule = generationOperationAdmission(operation)
+  if (rule && !initialized[rule.flag]) throw new Error(rule.error)
+}
+function assertGenerationChildOperationAllowed(parentOperation: string): void {
+  const childError = generationOperationAdmission(parentOperation)?.childError
+  if (childError) throw new Error(childError)
+}
 /** 可能出现在运行侧页「可恢复」区的运行，按操作类型归类。不在表里的从不列出：定稿后处理、图生成、导入，以及随聊天隐藏的助手任务（磁盘记录保留）。 */
 const RECOVERY_KIND: ReadonlyMap<string, 'planning' | 'review' | 'editor' | 'draft'> = new Map([
   ['generate-plot-outline', 'planning'], ['chapter-blueprint-directory', 'planning'],
@@ -418,20 +444,18 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
       || Object.hasOwn(selection, 'parentRootActionId') && (typeof selection.parentRootActionId !== 'string' || !selection.parentRootActionId.trim())
       || typeof selection.uiActionNonce !== 'string' || !selection.uiActionNonce.trim() || selection.uiActionNonce.length > 256
       || Object.keys(selection).some(key => !['operation', 'uiActionNonce', 'modelId', 'chapterNumber', 'selectedDraftIds', 'selectedFinalizedDraftIds', 'selectedBlueprintChapterNumbers', 'promptKeys', 'skillStages', 'authorInputs', 'output', 'outputOverrides', 'parentRootActionId', 'continueDirectoryOperationId', 'batchId', 'batchIntent', 'preparationId', 'finalizedCharacterContextId', 'reviewRevisionContextId', 'agentWorkflowRegistrationId', 'materialDecision', 'importSlot', 'importExecution', ...(agentInitialization ? ['agentInput', 'agentSession'] : []), ...(editorInitialization ? ['editorInlineInput'] : []), ...(finalizationInitialization ? ['finalizationGenerationSlot'] : []), ...(rebuildInitialization ? ['characterStateRebuild'] : []), ...(graphInitialization ? ['graphGenerationInput', 'graphGenerationKey'] : []), ...(legacyInitialization ? ['legacyRosterKey'] : [])].includes(key))) throw new Error('GENERATION_BEGIN_INVALID')
-    if (selection.operation === 'editor-inline' && !editorInitialization) throw new Error('GENERATION_EDITOR_ADMISSION_REQUIRED')
-    if (['finalized-chapter-notes', 'finalized-character-state'].includes(selection.operation) && !finalizationInitialization) throw new Error('GENERATION_FINALIZATION_ADMISSION_REQUIRED')
-    if (selection.operation === CHAPTER_CHARACTER_STATE_REBUILD_OPERATION && !rebuildInitialization) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_ADMISSION_REQUIRED')
-    if (Object.values(graphOperations).includes(selection.operation as typeof graphOperations[keyof typeof graphOperations]) && !graphInitialization) throw new Error('GENERATION_GRAPH_ADMISSION_REQUIRED')
-    if (selection.operation === 'legacy-character-roster-repair' && !legacyInitialization) throw new Error('GENERATION_LEGACY_ADMISSION_REQUIRED')
+    assertGenerationOperationAdmission(selection.operation, {
+      agent: agentInitialization, editor: editorInitialization, finalization: finalizationInitialization,
+      rebuild: rebuildInitialization, graph: graphInitialization, legacy: legacyInitialization,
+    })
     const importAdmission = imports.admit(selection)
     if (importAdmission?.existing) return viewOf(importAdmission.existing)
     if (importAdmission) selection = { ...selection, uiActionNonce: `import:${importGenerationSlotKey(selection.importSlot!)}`,
       ...(importAdmission.parentRootActionId ? { parentRootActionId: importAdmission.parentRootActionId, modelId: importAdmission.modelId! } : {}) }
-    if (selection.operation === 'agent-round' && !agentInitialization) throw new Error('GENERATION_AGENT_ADMISSION_REQUIRED')
     const agentWorkflow = agentInitialization ? undefined : agents.admitWorkflow(selection)
-    if (selection.parentRootActionId && repository.budget(selection.parentRootActionId).root.operation === 'editor-inline') throw new Error('GENERATION_EDITOR_CHILD_FORBIDDEN')
-    if (selection.parentRootActionId && Object.values(graphOperations).includes(repository.budget(selection.parentRootActionId).root.operation as typeof graphOperations[keyof typeof graphOperations])) throw new Error('GENERATION_GRAPH_CHILD_FORBIDDEN')
-    if (selection.parentRootActionId && repository.budget(selection.parentRootActionId).root.operation === 'legacy-character-roster-repair') throw new Error('GENERATION_LEGACY_CHILD_FORBIDDEN')
+    if (selection.parentRootActionId) {
+      assertGenerationChildOperationAllowed(repository.budget(selection.parentRootActionId).root.operation)
+    }
     if (agentWorkflow?.existing) return viewOf(repository.get(agentWorkflow.existing.runId))
     generationOutputContract(selection)
     const finalizedCharacterContextHash = finalizedCharacters.admit(selection)
@@ -565,13 +589,11 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
   }
   const execute = async (request: ExecuteGenerationRequest, agentExecution = false, importExecution = false, editorExecution = false, finalizationExecution = false, graphExecution = false, legacyExecution = false, shortOutlineRetryAttemptId?: string, rebuildExecution = false): Promise<MainGenerationExecuteReceipt> => {
     const run = requireRun(request.handle, true)
-    if (run.binding.sourceManifest.operation === 'agent-round' && !agentExecution) throw new Error('GENERATION_AGENT_ADMISSION_REQUIRED')
+    assertGenerationOperationAdmission(String(run.binding.sourceManifest.operation), {
+      agent: agentExecution, editor: editorExecution, finalization: finalizationExecution,
+      rebuild: rebuildExecution, graph: graphExecution, legacy: legacyExecution,
+    })
     if (run.binding.sourceManifest.importSlot && !importExecution) throw new Error('GENERATION_IMPORT_ADMISSION_REQUIRED')
-    if (run.binding.sourceManifest.operation === 'editor-inline' && !editorExecution) throw new Error('GENERATION_EDITOR_ADMISSION_REQUIRED')
-    if (['finalized-chapter-notes', 'finalized-character-state'].includes(run.binding.sourceManifest.operation as string) && !finalizationExecution) throw new Error('GENERATION_FINALIZATION_ADMISSION_REQUIRED')
-    if (run.binding.sourceManifest.operation === CHAPTER_CHARACTER_STATE_REBUILD_OPERATION && !rebuildExecution) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_ADMISSION_REQUIRED')
-    if (Object.values(graphOperations).includes(run.binding.sourceManifest.operation as typeof graphOperations[keyof typeof graphOperations]) && !graphExecution) throw new Error('GENERATION_GRAPH_ADMISSION_REQUIRED')
-    if (run.binding.sourceManifest.operation === 'legacy-character-roster-repair' && !legacyExecution) throw new Error('GENERATION_LEGACY_ADMISSION_REQUIRED')
     assertSemanticGenerationTask(request.task)
     const task = structuredClone(request.task)
     if (['generate-plot-outline', 'chapter-blueprint-directory'].includes(String(run.binding.sourceManifest.operation))
@@ -1094,7 +1116,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
   }
   const openRebuildChapter = (rebuildId: string, plan: ChapterCharacterStateRebuildPlan,
     chapter: ChapterCharacterStateRebuildPlan['chapters'][number], modelId: string, parentRootActionId?: string) => {
-    const prepared = finalizedCharacters.readContext(chapter.source.draftId)
+    const prepared = finalizedCharacters.readContext(chapter.source.draftId, true)
     if (!isDeepStrictEqual(prepared.context.source, chapter.source)) throw new Error('GENERATION_SOURCE_CHANGED')
     const view = begin({
       operation: CHAPTER_CHARACTER_STATE_REBUILD_OPERATION,

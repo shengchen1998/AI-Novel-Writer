@@ -1,13 +1,12 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { DavFixture } from '../../../test/helpers/webdav-fixture'
 import {
   WebDavBackupService,
   type WebDavAccount,
@@ -21,126 +20,15 @@ const GEN_C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const GEN_D = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const PARENT = '99999999-9999-4999-8999-999999999999'
 const PARENT_B = '88888888-8888-4888-8888-888888888888'
-const servers: Server[] = []
+const fixtures: DavFixture[] = []
 const roots: string[] = []
 
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 
-async function requestBytes(request: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = []
-  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-  return Buffer.concat(chunks)
-}
-
-// The stub echoes request paths into XML; escape them like a real server would.
-function escapeXml(value: string): string {
-  return value.replace(/[&<>"']/g, char => `&#${char.charCodeAt(0)};`)
-}
-
-function encodeDavHref(value: string): string {
-  return value.split('/').map(segment => {
-    try { return encodeURIComponent(decodeURIComponent(segment)) }
-    catch { return encodeURIComponent(segment) }
-  }).join('/')
-}
-
-class DavFixture {
-  readonly files = new Map<string, Buffer>()
-  readonly collections = new Set<string>(['/dav/'])
-  readonly requests: Array<{ method: string; url: string; authorization: string; ifNoneMatch: string }> = []
-  propfindBody: string | null = null
-  dropAfterPutSuffix: string | null = null
-  corruptDroppedPut = false
-  redirectSuffix: string | null = null
-  redirectLocation = ''
-  slowGetSuffix: string | null = null
-  stallUpload = false
-  onUpload?: () => void
-  private dropped = false
-  private server: Server
-  baseUrl = ''
-
-  constructor() {
-    this.server = createServer((request, response) => void this.handle(request, response))
-    servers.push(this.server)
-  }
-
-  async listen(): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      this.server.once('error', reject)
-      this.server.listen(0, '127.0.0.1', resolve)
-    })
-    this.baseUrl = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}/dav/`
-  }
-
-  private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const method = request.method ?? ''
-    const url = request.url ?? ''
-    this.requests.push({
-      method,
-      url,
-      authorization: String(request.headers.authorization ?? ''),
-      ifNoneMatch: String(request.headers['if-none-match'] ?? ''),
-    })
-    if (this.redirectSuffix && url.endsWith(this.redirectSuffix)) {
-      response.writeHead(302, { location: this.redirectLocation })
-      response.end()
-      return
-    }
-    if (method === 'MKCOL') {
-      this.collections.add(url.endsWith('/') ? url : `${url}/`)
-      response.writeHead(201).end()
-      return
-    }
-    if (method === 'PUT') {
-      if (url.endsWith('archive.ainovel')) {
-        this.onUpload?.()
-        if (this.stallUpload) { request.resume(); return }
-      }
-      let body: Buffer
-      try { body = await requestBytes(request) } catch { return }
-      if (this.dropAfterPutSuffix && url.endsWith(this.dropAfterPutSuffix) && !this.dropped) {
-        this.dropped = true
-        if (this.corruptDroppedPut && body.length) body = Buffer.concat([body.subarray(0, -1), Buffer.from('!')])
-        this.files.set(url, body)
-        request.socket.destroy()
-        return
-      }
-      this.files.set(url, body)
-      response.writeHead(201).end()
-      return
-    }
-    if (method === 'GET' || method === 'HEAD') {
-      const body = this.files.get(url)
-      if (!body) { response.writeHead(404).end(); return }
-      response.writeHead(200, { 'content-length': body.length, 'content-type': 'application/octet-stream' })
-      if (method === 'HEAD') { response.end(); return }
-      if (this.slowGetSuffix && url.endsWith(this.slowGetSuffix)) {
-        response.write(body.subarray(0, Math.max(1, Math.floor(body.length / 2))))
-        setTimeout(() => response.end(body.subarray(Math.max(1, Math.floor(body.length / 2)))), 150)
-        return
-      }
-      response.end(body)
-      return
-    }
-    if (method === 'PROPFIND') {
-      const body = this.propfindBody ?? this.multistatus(url)
-      response.writeHead(207, { 'content-type': 'application/xml', 'content-length': Buffer.byteLength(body) })
-      response.end(body)
-      return
-    }
-    response.writeHead(405).end()
-  }
-
-  private multistatus(root: string): string {
-    const normalized = root.endsWith('/') ? root : `${root}/`
-    const children = [...this.collections]
-      .filter(candidate => candidate.startsWith(normalized) && candidate !== normalized
-        && !candidate.slice(normalized.length).replace(/\/$/u, '').includes('/'))
-    return `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">${[normalized, ...children]
-      .map(href => `<d:response><d:href>${escapeXml(encodeDavHref(href))}</d:href><d:status>HTTP/1.1 200 OK</d:status></d:response>`)
-      .join('')}</d:multistatus>`
-  }
+function davFixture(): DavFixture {
+  const fixture = new DavFixture()
+  fixtures.push(fixture)
+  return fixture
 }
 
 function workspace(): { root: string; archive: string; target: string; bytes: Buffer } {
@@ -169,7 +57,7 @@ function appender(fixture: DavFixture, generationId: string, archivePath: string
 }
 
 afterEach(async () => {
-  await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => server.close(() => resolve()))))
+  await Promise.all(fixtures.splice(0).map(fixture => fixture.close()))
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -184,7 +72,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('finishes a continuously read archive upload that exceeds the metadata deadline', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
     fs.writeFileSync(source.archive, Buffer.alloc(4352 * 1024, 7))
     const service = new WebDavBackupService({ generationIdFactory: () => GEN_A, fetchImpl: async (url, init) => {
@@ -208,7 +96,7 @@ describe('WebDavBackupService', () => {
   }, 30_000)
 
   it('reads back and restores an archive whose GET outlasts the metadata deadline', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
     fs.writeFileSync(source.archive, Buffer.alloc(64 * 1024, 7))
     const service = new WebDavBackupService({ generationIdFactory: () => GEN_A, timeoutMs: 300, transferTimeoutMs: 60_000,
@@ -232,7 +120,7 @@ describe('WebDavBackupService', () => {
   }, 30_000)
 
   it.each([false, true])('expires or cancels a stalled archive PUT without publishing completion: cancel=%s', async cancel => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
     dav.stallUpload = true
     const controller = new AbortController()
@@ -245,7 +133,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('checks a loopback WebDAV connection without exposing credentials', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
 
     await expect(new WebDavBackupService().checkConnection(account(dav))).resolves.toEqual({ connected: true })
     expect(dav.requests).toHaveLength(1)
@@ -254,7 +142,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('keeps hostile WebDAV hrefs encoded as URI paths, not XML or HTML markup', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     dav.collections.add('/dav/<img src=x onerror=alert(1)>/')
 
     const response = await fetch(dav.baseUrl, { method: 'PROPFIND' })
@@ -272,7 +160,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('appends, lists, and downloads two no-CAS sibling generations without using latest', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
 
     const first = await appender(dav, GEN_A, source.archive)
@@ -298,7 +186,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('groups the same parent set as siblings regardless of parent click order and keeps the stored order', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
     const manifestOf = (generationId: string) =>
       dav.files.get(`/dav/books/${BOOK}/generations/${generationId}/manifest.json`)!
@@ -330,7 +218,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('does not list a generation whose upload never reached completion.json', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
     await appender(dav, GEN_A, source.archive)
     const partial = `/dav/books/${BOOK}/generations/${GEN_C}/`
@@ -344,7 +232,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('accepts a same-origin absolute generation href inside the configured root', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
     await appender(dav, GEN_A, source.archive)
     const href = `${dav.baseUrl}books/${BOOK}/generations/${GEN_A}/`
@@ -355,7 +243,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('verifies an unknown PUT result by GET instead of blindly overwriting it', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
     dav.dropAfterPutSuffix = 'archive.ainovel'
 
@@ -366,7 +254,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('rejects an unknown PUT whose persisted bytes do not match and never writes completion', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
     dav.dropAfterPutSuffix = 'archive.ainovel'
     dav.corruptDroppedPut = true
@@ -376,7 +264,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('rejects wrong archive hash or length and leaves no downloaded target', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
     await appender(dav, GEN_A, source.archive)
     const remoteArchive = `/dav/books/${BOOK}/generations/${GEN_A}/archive.ainovel`
@@ -397,8 +285,8 @@ describe('WebDavBackupService', () => {
   })
 
   it('rejects redirects without forwarding Authorization to another origin', async () => {
-    const sourceDav = new DavFixture(); await sourceDav.listen()
-    const targetDav = new DavFixture(); await targetDav.listen()
+    const sourceDav = davFixture(); await sourceDav.listen()
+    const targetDav = davFixture(); await targetDav.listen()
     const source = workspace()
     await appender(sourceDav, GEN_A, source.archive)
     sourceDav.redirectSuffix = 'archive.ainovel'
@@ -416,7 +304,7 @@ describe('WebDavBackupService', () => {
     ['encoded traversal', '/dav/books/cloud-book-a/generations/%2e%2e/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/'],
     ['absolute URL', 'http://example.invalid/dav/books/cloud-book-a/generations/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/'],
   ])('rejects a malicious PROPFIND href: %s', async (_label, href) => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     dav.propfindBody = `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>${href}</d:href></d:response></d:multistatus>`
 
     await expect(new WebDavBackupService().listGenerations({ account: account(dav), cloudBookId: BOOK }))
@@ -425,8 +313,8 @@ describe('WebDavBackupService', () => {
   })
 
   it('rejects a cross-origin absolute href without sending Authorization to that origin', async () => {
-    const sourceDav = new DavFixture(); await sourceDav.listen()
-    const targetDav = new DavFixture(); await targetDav.listen()
+    const sourceDav = davFixture(); await sourceDav.listen()
+    const targetDav = davFixture(); await targetDav.listen()
     const href = `${targetDav.baseUrl}books/${BOOK}/generations/${GEN_A}/`
     sourceDav.propfindBody = `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>${href}</d:href></d:response></d:multistatus>`
 
@@ -440,7 +328,7 @@ describe('WebDavBackupService', () => {
     ['CDATA', '<d:multistatus xmlns:d="DAV:"><![CDATA[hidden]]></d:multistatus>'],
     ['oversized XML', `<d:multistatus xmlns:d="DAV:">${' '.repeat(4096)}</d:multistatus>`],
   ])('rejects unsafe or oversized XML: %s', async (_label, body) => {
-    const dav = new DavFixture(); await dav.listen(); dav.propfindBody = body
+    const dav = davFixture(); await dav.listen(); dav.propfindBody = body
 
     await expect(new WebDavBackupService({ maxXmlBytes: 1024 })
       .listGenerations({ account: account(dav), cloudBookId: BOOK }))
@@ -448,7 +336,7 @@ describe('WebDavBackupService', () => {
   })
 
   it('cancels a streaming download, cleans its temporary file, and never overwrites an existing target', async () => {
-    const dav = new DavFixture(); await dav.listen()
+    const dav = davFixture(); await dav.listen()
     const source = workspace()
     fs.writeFileSync(source.archive, Buffer.alloc(128 * 1024, 7))
     await appender(dav, GEN_A, source.archive)

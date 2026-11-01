@@ -55,6 +55,7 @@ describe('installed M07 lane', () => {
 
       for (const statement of [
         "UPDATE chapter_character_state_snapshots SET chapter_title='改写' WHERE snapshot_id='snapshot-1'",
+        "UPDATE chapter_character_state_snapshots SET unresolved_json='[{\"displayName\":\"改写\"}]' WHERE snapshot_id='snapshot-1'",
         "UPDATE chapter_character_state_snapshot_characters SET display_name_snapshot='改写' WHERE snapshot_id='snapshot-1'",
         "UPDATE chapter_character_state_snapshot_fields SET value='改写' WHERE snapshot_id='snapshot-1'",
       ]) {

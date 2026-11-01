@@ -401,7 +401,7 @@ export function invalidateContinuityProjectionFrom(
 }
 
 export class SummaryRepository {
-  static readFinalizedCharacterContext(draftId: number, scope: ProjectEpoch, database = getProjectDb()): FinalizedCharacterContext {
+  static readFinalizedCharacterContext(draftId: number, scope: ProjectEpoch, database = getProjectDb(), allowInactiveIdentities = false): FinalizedCharacterContext {
     if (!database || !scope.projectId?.trim() || !scope.epoch?.trim()) throw new Error('FINALIZED_CHARACTER_SCOPE_REQUIRED')
     const db = database
     return db.transaction(() => {
@@ -412,9 +412,10 @@ export class SummaryRepository {
       if (!latest || latest.id !== draftId) throw new Error('FINALIZED_CHARACTER_SOURCE_CHANGED')
       const frozen = readFrozenCharacterSnapshot(db, source.source)
       const characters = (frozen?.characters ?? []).map(character => {
-        const row = db.prepare('SELECT * FROM characters WHERE character_id=? AND retired=0').get(character.characterId) as Record<string, unknown> | undefined
-        if (!row) throw new Error('FINALIZED_CHARACTER_ID_RETIRED')
-        return { ...structuredClone(character), fields: CHARACTER_STATE_TEXT_FIELDS.map(field => stateSnapshot(row, field, scope)) }
+        const row = db.prepare('SELECT * FROM characters WHERE character_id=?').get(character.characterId) as Record<string, unknown> | undefined
+        if (!allowInactiveIdentities && (!row || row.retired !== 0)) throw new Error('FINALIZED_CHARACTER_ID_RETIRED')
+        const fieldsRow = row ?? { character_id: character.characterId, cs_provenance: '{}' }
+        return { ...structuredClone(character), fields: CHARACTER_STATE_TEXT_FIELDS.map(field => stateSnapshot(fieldsRow, field, scope)) }
       })
       return { projectId: scope.projectId, epoch: scope.epoch, source: source.source, content: source.content, projectionGeneration: source.projectionGeneration,
         identityRevision: frozen?.identityRevision ?? 0, identityStatus: frozen ? 'bound' as const : 'legacy' as const,
@@ -424,11 +425,12 @@ export class SummaryRepository {
   }
 
   static commitFinalizedCharacterStates(context: FinalizedCharacterContext, response: FinalizedCharacterStateResponse, database = getProjectDb(),
-    originProjectId?: string, stateBaseline?: ChapterCharacterStateSnapshotBaseline, snapshotOperationId?: string): FinalizedCharacterStateCommitReceipt {
+    originProjectId?: string, stateBaseline?: ChapterCharacterStateSnapshotBaseline, snapshotOperationId?: string,
+    allowInactiveIdentities = false): FinalizedCharacterStateCommitReceipt {
     if (!database) throw new Error('PROJECT_NOT_OPEN')
     const db = database
     const prepared = db.transaction(() => {
-      const current = SummaryRepository.readFinalizedCharacterContext(context.source.draftId, context, db)
+      const current = SummaryRepository.readFinalizedCharacterContext(context.source.draftId, context, db, allowInactiveIdentities)
       const identity = (value: FinalizedCharacterContext) => ({ source: value.source, content: value.content, projectionGeneration: value.projectionGeneration,
         identityRevision: value.identityRevision, identityStatus: value.identityStatus, sourceOrder: value.sourceOrder,
         characters: value.characters.map(({ fields: _fields, ...character }) => { void _fields; return character }) })

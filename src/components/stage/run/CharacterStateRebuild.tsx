@@ -11,6 +11,7 @@ import { useProjectStore } from '../../../stores/project-store'
 import { captureProjectSession, isProjectSessionCurrent } from '../../project-session-gate'
 import { Button } from '../../ui/Button'
 import { InlineConfirm } from '../../ui/InlineConfirm'
+import { Notice } from '../../ui/Notice'
 
 export default function CharacterStateRebuild() {
   const text = useLocaleStore(s => s.text)
@@ -98,7 +99,7 @@ export default function CharacterStateRebuild() {
   const chapters = plan?.chapters.filter(chapter => selectedEnd !== null && chapter.source.chapterNumber <= selectedEnd) ?? []
   return (
     <section className="run-recovery" aria-label={text('章节状态重建', 'Chapter-state rebuild')}>
-      {error && <p className="run-note" data-tone="danger" role="alert">{error}</p>}
+      {error && <Notice tone="danger" title={error} />}
       {runs.map(run => (
         <article className="run-card" data-state={run.status === 'failed' ? 'failed' : run.status === 'completed' ? 'completed' : 'recoverable'} key={run.rebuildId}>
           <header className="run-card-heading">
@@ -114,10 +115,10 @@ export default function CharacterStateRebuild() {
           {run.nextChapterNumber !== null && run.status !== 'completed' && (
             <p className="run-note">{text(`断点：下一章为第 ${run.nextChapterNumber} 章`, `Checkpoint: next is chapter ${run.nextChapterNumber}.`)}</p>
           )}
-          {run.status === 'failed' && <p className="run-note" data-tone="danger">{text('重建失败，已完成进度已保留。', 'Rebuild failed; completed chapters are preserved.')}</p>}
+          {run.status === 'failed' && <Notice tone="danger" title={text('重建失败，已完成进度已保留。', 'Rebuild failed; completed chapters are preserved.')} />}
           {run.status === 'cancelled' && <p className="run-note">{text('重建已取消，已完成进度已保留。', 'Rebuild cancelled; completed chapters are preserved.')}</p>}
-          {run.status === 'completed' && <p className="run-note" data-tone="ok">{text('重建完成。', 'Rebuild complete.')}</p>}
-          {run.sourceStatus === 'conflict' && <p className="run-note" data-tone="danger">{text('定稿来源已变化，请重新确认重建范围。', 'Finalized sources changed; review a new rebuild range.')}</p>}
+          {run.status === 'completed' && <Notice tone="ok" title={text('重建完成。', 'Rebuild complete.')} />}
+          {run.sourceStatus === 'conflict' && <Notice tone="danger" title={text('定稿来源已变化，请重新确认重建范围。', 'Finalized sources changed; review a new rebuild range.')} />}
           <ol className="run-note">
             {run.chapters.map(chapter => <li key={chapter.source.finalizationId}>{text(
               `第 ${chapter.source.chapterNumber} 章 · ${chapter.chapterTitle} · ${chapterStatus(chapter.status, 'zh')}`,
@@ -174,7 +175,7 @@ export default function CharacterStateRebuild() {
               onCancel={() => setConfirming(false)}
               onConfirm={() => void act('begin', randomUUID(), selectedEnd)}
             />
-          ) : <p className="run-note" data-tone="danger" role="alert">{text('请先在设置中配置生成模型。', 'Configure a generation model in Settings first.')}</p>}
+          ) : <Notice tone="danger" title={text('请先在设置中配置生成模型。', 'Configure a generation model in Settings first.')} />}
         </div>
       )}
     </section>

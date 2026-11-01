@@ -25,9 +25,10 @@ export function finalizationNotesBaseline(db: Database.Database, slot: Finalizat
 const immutableIdentity = (context: FinalizedCharacterContext) => ({ ...context, characters: context.characters.map(({ fields: _fields, ...identity }) => { void _fields; return identity }) })
 
 export function captureFinalizationGenerationContext(db: Database.Database, slot: FinalizationGenerationSlot, scope: { projectId: string; epoch: string },
-  writingLanguage: WritingLanguage, template: PromptTemplate, frozen?: FinalizationGenerationContext): FinalizationGenerationContext {
+  writingLanguage: WritingLanguage, template: PromptTemplate, frozen?: FinalizationGenerationContext,
+  allowInactiveIdentities = false): FinalizationGenerationContext {
   finalizationSlotKey(slot)
-  const identity = SummaryRepository.readFinalizedCharacterContext(slot.source.draftId, frozen?.identity ?? scope, db)
+  const identity = SummaryRepository.readFinalizedCharacterContext(slot.source.draftId, frozen?.identity ?? scope, db, allowInactiveIdentities)
   if (!isDeepStrictEqual(identity.source, slot.source)) throw new Error('GENERATION_FINALIZATION_SOURCE_CHANGED')
   if (frozen && (!isDeepStrictEqual(slot, frozen.slot) || !isDeepStrictEqual(immutableIdentity(identity), immutableIdentity(frozen.identity)))) throw new Error('GENERATION_FINALIZATION_IDENTITY_CHANGED')
   const characterStateBaseline = slot.stepKey === 'character_cards'

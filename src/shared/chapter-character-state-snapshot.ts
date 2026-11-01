@@ -16,6 +16,8 @@ export interface ChapterCharacterStateSnapshotCharacterSummary {
   displayNameSnapshot: string
   aliases: string[]
   updatedAtChapter: number
+  involved: boolean
+  changedFields: CharacterStateTextField[]
 }
 
 export interface ChapterCharacterStateSnapshotCharacter extends ChapterCharacterStateSnapshotCharacterSummary {
