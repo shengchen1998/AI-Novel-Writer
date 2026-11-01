@@ -22,7 +22,7 @@ export interface DraftMeta {
   wordCount?: number
   createdAt: string
   updatedAt?: string
-  source: 'write' | 'rewrite'
+  source: 'write' | 'rewrite' | 'author'
   sourceDependencies?: DB_DraftMeta['sourceDependencies']
   dependenciesStale?: boolean
 
