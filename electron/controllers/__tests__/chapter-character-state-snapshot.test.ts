@@ -7,6 +7,7 @@ import type { FinalizationResult } from '../../services/finalization-service'
 import { registerGenerationController } from '../generation-controller'
 import { registerDatabaseController } from '../db-controller'
 import { registerFinalizationController } from '../finalization-controller'
+import { registerChapterLifecycleController } from '../chapter-lifecycle-controller'
 import { ModelExecutionLeaseRegistry } from '../../services/model-execution-lease'
 import { projectAccess } from '../../services/project-access'
 import { createProjectDatabase, initProjectDatabase, closeProjectDatabase, getProjectDb } from '../../database'
@@ -40,6 +41,7 @@ beforeAll(() => {
   })
   registerDatabaseController()
   registerFinalizationController()
+  registerChapterLifecycleController()
 })
 
 beforeEach(() => {
@@ -911,5 +913,267 @@ describe('first chapter character-state snapshot through real finalization and g
       restored.close()
     }
     expect(extraction.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps known snapshots and identity proposals when other occurrences are unknown or ambiguous', async () => {
+    seedDraft()
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedCharacter('character-zhou', '周研', {}, {})
+    seedCharacter('character-zhou-twin', '周研', {}, {})
+    await finalize()
+    const extraction = await extractedCommit(1, [
+      {
+        characterId: 'character-lin', name: '林岚', currentState: { physicalState: '受伤' },
+        evidence: { start: 0, end: prose.length, text: prose },
+      },
+      {
+        characterId: 'character-unknown', name: '陌生人', currentState: { location: '南桥' },
+        evidence: { start: 0, end: prose.length, text: prose },
+      },
+      {
+        characterId: 'character-zhou', name: '周研', currentState: { location: '旧站' },
+        evidence: { start: 0, end: prose.length, text: prose },
+      },
+    ])
+
+    const effect = await invoke<Record<string, unknown>>('finalization-generation:commit', extraction.request)
+    expect(effect).toMatchObject({
+      success: true,
+      proposalBatchId: expect.any(String),
+      unresolved: [
+        expect.objectContaining({ reason: 'unknown-id', displayName: '陌生人' }),
+        expect.objectContaining({ reason: 'ambiguous', displayName: '周研' }),
+      ],
+    })
+    const [summary] = await listSnapshots('character-lin')
+    expect(summary).toBeTruthy()
+    const detail = await readSnapshot(summary!.snapshotId as string, 'character-lin')
+    expect(detail.character).toMatchObject({
+      characterId: 'character-lin',
+      fields: expect.arrayContaining([expect.objectContaining({ field: 'physicalState', value: '受伤' })]),
+    })
+    expect(detail.unresolved).toEqual([
+      expect.objectContaining({ reason: 'unknown-id', displayName: '陌生人', candidateIds: [] }),
+      expect.objectContaining({ reason: 'ambiguous', displayName: '周研', candidateIds: ['character-zhou', 'character-zhou-twin'] }),
+    ])
+    await expect(invoke('character-proposal:list-pending-finalized')).resolves.toEqual([
+      expect.objectContaining({ finalizationId: extraction.source.finalizationId }),
+    ])
+    const roster = await invoke<{ entries: Array<{ characterId: string }> }>('db:character-roster-read', session.projectPath)
+    expect(roster.entries.map(entry => entry.characterId)).not.toContain('character-unknown')
+  })
+
+  it('deletes every snapshot version and identity source with its chapter while retaining invalid later history', async () => {
+    const firstProse = '第一章旧正文，林岚受伤。'
+    const revisedProse = '第一章新正文，林岚康复。'
+    const laterProse = '第二章林岚抵达南桥。'
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedDraft(1, 1, firstProse)
+    const firstFinalization = await finalize(1, firstProse)
+    const first = await extractedCommit(1, [{
+      characterId: 'character-unknown', name: '陌生人', currentState: { location: '北塔' },
+      evidence: { start: 0, end: firstProse.length, text: firstProse },
+    }])
+    await invoke('finalization-generation:commit', first.request)
+    getProjectDb()!.prepare('INSERT INTO contents(id,body) VALUES(2,?)').run(revisedProse)
+    getProjectDb()!.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id,word_count) VALUES(2,1,2,'draft',2,12)").run()
+    const revisedFinalization = await finalize(2, revisedProse, 1, 1, '北塔修订')
+    const revised = await extractedCommit(2, [])
+    await invoke('finalization-generation:commit', revised.request)
+    seedDraft(3, 1, laterProse, 2, '南桥')
+    const laterFinalization = await finalize(3, laterProse, 1, 2, '南桥')
+    const later = await extractedCommit(3, [])
+    await invoke('finalization-generation:commit', later.request)
+    const before = await listSnapshots('character-lin')
+    expect(before).toHaveLength(3)
+    getProjectDb()!.prepare("INSERT INTO post_process_runs(id,trigger_source_type,trigger_source_id) VALUES('chapter-1-no-kb','chapter_finalize',?)")
+      .run(`finalization:${revisedFinalization.finalizationId}`)
+
+    const deletion = await invoke<Record<string, unknown>>('chapter:delete-finalized', {
+      draftId: 2, chapterNumber: 1,
+    }, session.projectPath)
+    expect(deletion).toMatchObject({ success: true, committed: true, operation: { status: 'completed' } })
+    await expect(invoke('chapter:delete-finalized', { draftId: 2, chapterNumber: 1 }, session.projectPath)).resolves.toEqual(deletion)
+
+    const remaining = await listSnapshots('character-lin')
+    expect(remaining).toHaveLength(1)
+    expect(remaining[0]).toMatchObject({
+      source: { finalizationId: laterFinalization.finalizationId },
+      validity: 'invalid',
+    })
+    for (const snapshot of before.filter(item => (item.source as { chapterNumber: number }).chapterNumber === 1)) {
+      await expect(readSnapshot(snapshot.snapshotId as string, 'character-lin')).resolves.toBeNull()
+    }
+    await expect(readSnapshot(remaining[0]!.snapshotId as string, 'character-lin')).resolves.toMatchObject({
+      status: 'invalid', unresolved: [],
+    })
+    await expect(invoke('finalized-character:read-state-continuity')).resolves.toEqual([
+      expect.objectContaining({
+        source: expect.objectContaining({ chapterNumber: 2 }),
+        status: 'invalid-snapshot', invalidatedByChange: true,
+      }),
+    ])
+    const deletedFinalizationIds = [firstFinalization.finalizationId, revisedFinalization.finalizationId]
+    const deletedSnapshotIds = before.filter(item => (item.source as { chapterNumber: number }).chapterNumber === 1)
+      .map(item => item.snapshotId as string)
+    const proposalIds = [
+      ...deletedFinalizationIds.map(id => `fcs:${id}`),
+      ...deletedSnapshotIds.map(id => `fcu:${id}`),
+    ]
+    const proposalRows = getProjectDb()!.prepare(`SELECT proposal_id FROM character_identity_proposals
+      WHERE proposal_id IN (${proposalIds.map(() => '?').join(',')})`).all(...proposalIds)
+    expect(proposalRows).toEqual([])
+    for (const table of ['chapter_character_state_snapshots', 'chapter_character_state_snapshot_characters', 'chapter_character_state_snapshot_fields']) {
+      expect(getProjectDb()!.prepare(`SELECT COUNT(*) FROM ${table} WHERE snapshot_id IN (${deletedSnapshotIds.map(() => '?').join(',')})`)
+        .pluck().get(...deletedSnapshotIds)).toBe(0)
+    }
+    expect(getProjectDb()!.pragma('foreign_key_check')).toEqual([])
+  })
+
+  it('preserves historical names and aliases across rename and merge-delete retirement without reviving the old ID', async () => {
+    const firstProse = '第一章林岚在北塔受伤。'
+    const secondProse = '第二章林岚抵达南桥。'
+    seedCharacter('character-old', '林岚', {}, {})
+    seedCharacter('character-survivor', '林澜', {}, {})
+    getProjectDb()!.transaction(() => refreshCharacterIdentityProjection(getProjectDb()!))()
+    seedDraft(1, 1, firstProse)
+    await finalize(1, firstProse)
+    const first = await extractedCommit(1, [{
+      characterId: 'character-old', currentState: { physicalState: '受伤' },
+      evidence: { start: 0, end: firstProse.length, text: firstProse },
+    }])
+    await invoke('finalization-generation:commit', first.request)
+    const [oldSummary] = await listSnapshots('character-old')
+    const oldDetail = await readSnapshot(oldSummary!.snapshotId as string, 'character-old')
+    expect(oldDetail.character).toMatchObject({ displayNameSnapshot: '林岚', aliases: ['林岚'] })
+    type Roster = {
+      revision: number
+      identityRevision: number
+      schemaVersion: 1
+      entries: Array<Record<string, unknown> & { characterId: string; name: string }>
+    }
+    const beforeRename = await invoke<Roster>('db:character-roster-read', session.projectPath)
+    await invoke('db:character-roster-commit', {
+      operationId: 'rename-old-character', expectedRevision: beforeRename.revision,
+      expectedIdentityRevision: beforeRename.identityRevision, schemaVersion: beforeRename.schemaVersion, intent: 'manual_edit',
+      entries: beforeRename.entries.map(entry => entry.characterId === 'character-old' ? { ...entry, name: '林岚新' } : entry),
+      renames: [{ characterId: 'character-old', newName: '林岚新' }],
+    }, session.projectPath)
+    expect(await readSnapshot(oldSummary!.snapshotId as string, 'character-old')).toEqual(oldDetail)
+
+    const beforeMerge = await invoke<Roster>('db:character-roster-read', session.projectPath)
+    const survivor = beforeMerge.entries.find(entry => entry.characterId === 'character-survivor')!
+    const merge = await invoke<{ success: boolean; error?: string }>('db:character-roster-commit', {
+      operationId: 'merge-delete-old-character', expectedRevision: beforeMerge.revision,
+      expectedIdentityRevision: beforeMerge.identityRevision, schemaVersion: beforeMerge.schemaVersion, intent: 'manual_edit',
+      entries: [{ ...survivor, name: '林岚' }],
+      renames: [{ characterId: 'character-survivor', newName: '林岚' }],
+    }, session.projectPath)
+    expect(merge.error).toBeUndefined()
+    expect(await readSnapshot(oldSummary!.snapshotId as string, 'character-old')).toEqual(oldDetail)
+
+    seedDraft(2, 1, secondProse, 2, '南桥')
+    await finalize(2, secondProse, 1, 2, '南桥')
+    const second = await extractedCommit(2, [])
+    await invoke('finalization-generation:commit', second.request)
+    const current = await invoke<Roster>('db:character-roster-read', session.projectPath)
+    expect(current.entries.map(entry => entry.characterId)).toEqual(['character-survivor'])
+    expect(current.entries[0]!.name).toBe('林岚')
+    expect(await listSnapshots('character-old')).toEqual([oldSummary])
+    expect(await listSnapshots('character-survivor')).toHaveLength(2)
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'ready' })
+    expect(second.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails the whole extraction when any occurrence has no determinable identity', async () => {
+    seedDraft()
+    seedCharacter('character-lin', '林岚', {}, {})
+    await finalize()
+    const extraction = await extractedCommit(1, [
+      {
+        characterId: 'character-lin', currentState: { physicalState: '受伤' },
+        evidence: { start: 0, end: prose.length, text: prose },
+      },
+      {
+        currentState: { location: '南桥' },
+        evidence: { start: 0, end: prose.length, text: prose },
+      },
+    ])
+
+    await expect(invoke('finalization-generation:commit', extraction.request))
+      .rejects.toThrow('FINALIZED_CHARACTER_IDENTITY_REQUIRED')
+    expect(await listSnapshots('character-lin')).toEqual([])
+    await expect(invoke('character-proposal:list-pending-finalized')).resolves.toEqual([])
+    await expect(invoke('db:draft-get-full', 1, session.projectPath)).resolves.toMatchObject({ status: 'finalized', content: prose })
+    const roster = await invoke<{ entries: Array<{ currentState?: { physicalState: string } }> }>(
+      'db:character-roster-read', session.projectPath,
+    )
+    expect(roster.entries[0]?.currentState?.physicalState ?? '').toBe('')
+  })
+
+  it('creates a rewrite draft for old prose and appends a new snapshot only after refinalization', async () => {
+    const oldProse = '林岚在北塔受伤。'
+    const currentProse = '林岚在北塔康复。'
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedDraft(1, 1, oldProse)
+    await finalize(1, oldProse)
+    const first = await extractedCommit(1, [{
+      characterId: 'character-lin', currentState: { physicalState: '受伤' },
+      evidence: { start: 0, end: oldProse.length, text: oldProse },
+    }])
+    await invoke('finalization-generation:commit', first.request)
+    const [firstSummary] = await listSnapshots('character-lin')
+    const firstDetail = await readSnapshot(firstSummary!.snapshotId as string, 'character-lin')
+    getProjectDb()!.prepare('INSERT INTO contents(id,body) VALUES(2,?)').run(currentProse)
+    getProjectDb()!.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id,word_count) VALUES(2,1,2,'draft',2,12)").run()
+    await finalize(2, currentProse)
+    const second = await extractedCommit(2, [{
+      characterId: 'character-lin', currentState: { physicalState: '康复' },
+      evidence: { start: 0, end: currentProse.length, text: currentProse },
+    }])
+    await invoke('finalization-generation:commit', second.request)
+
+    const oldDraft = await invoke<{ content: string }>('db:draft-get-full', 1, session.projectPath)
+    const nextVersion = await invoke<number>('db:draft-next-version', 1, session.projectPath)
+    const rollback = await invoke<{ success: boolean; id?: number }>('db:draft-create', {
+      chapterNumber: 1, version: nextVersion, source: 'rewrite', content: oldDraft.content, wordCount: 12,
+    }, session.projectPath)
+    expect(rollback).toMatchObject({ success: true, id: expect.any(Number) })
+    expect(await listSnapshots('character-lin')).toHaveLength(2)
+    const beforeRefinalization = await invoke<{ entries: Array<{ currentState?: { physicalState: string } }> }>(
+      'db:character-roster-read', session.projectPath,
+    )
+    expect(beforeRefinalization.entries[0]?.currentState?.physicalState).toBe('康复')
+    await expect(invoke('db:draft-get-full', rollback.id, session.projectPath)).resolves.toMatchObject({
+      status: 'draft', source: 'rewrite', content: oldProse,
+    })
+
+    const rollbackFinalization = await finalize(rollback.id, oldProse, 1, 1, '北塔回退')
+    expect(await listSnapshots('character-lin')).toHaveLength(2)
+    const third = await extractedCommit(rollback.id!, [{
+      characterId: 'character-lin', currentState: { physicalState: '受伤' },
+      evidence: { start: 0, end: oldProse.length, text: oldProse },
+    }])
+    await invoke('finalization-generation:commit', third.request)
+    const versions = await listSnapshots('character-lin')
+    expect(versions).toHaveLength(3)
+    expect(versions.filter(version => version.validity === 'valid')).toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ finalizationId: rollbackFinalization.finalizationId }) }),
+    ])
+    expect(versions.filter(version => version.validity === 'superseded')).toHaveLength(2)
+    const thirdSummary = versions.find(version => (version.source as { finalizationId: string }).finalizationId === rollbackFinalization.finalizationId)!
+    const thirdDetail = await readSnapshot(thirdSummary.snapshotId as string, 'character-lin')
+    expect(thirdSummary.snapshotId).not.toBe(firstSummary!.snapshotId)
+    expect(thirdDetail.character).toMatchObject({
+      fields: expect.arrayContaining([expect.objectContaining({
+        field: 'physicalState', value: '受伤',
+        provenance: expect.objectContaining({ kind: 'derived', source: expect.objectContaining({ finalizationId: rollbackFinalization.finalizationId }) }),
+      })]),
+    })
+    expect(await readSnapshot(firstSummary!.snapshotId as string, 'character-lin')).toEqual({
+      ...firstDetail,
+      status: 'invalid',
+      validity: 'superseded',
+    })
   })
 })

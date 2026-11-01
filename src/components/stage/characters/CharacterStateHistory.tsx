@@ -113,6 +113,28 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
               <h2>{text(`第 ${detail.source.chapterNumber} 章 · ${detail.chapterTitle}`, `Chapter ${detail.source.chapterNumber} · ${detail.chapterTitle}`)}</h2>
               <p>{detail.character.displayNameSnapshot}{detail.character.aliases.length > 0 ? ` · ${detail.character.aliases.join(' / ')}` : ''}</p>
             </header>
+            {detail.unresolved && detail.unresolved.length > 0 && (
+              <section className="cast-history-source cast-history-unresolved" aria-label={text('未解析身份', 'Unresolved identities')}>
+                <h3>{text('未解析身份', 'Unresolved identities')}</h3>
+                <p>{text('未写入角色状态；请在角色建议中确认身份。', 'Not written to character state. Confirm the identity in character suggestions.')}</p>
+                <ul>
+                  {detail.unresolved.map(occurrence => (
+                    <li key={occurrence.selectionKey}>
+                      <span>{occurrence.displayName || occurrence.originalText || text('未命名身份', 'Unnamed identity')}</span>
+                      <span className="cast-history-validity">
+                        {occurrence.reason === 'ambiguous'
+                          ? text('身份歧义', 'Ambiguous identity')
+                          : occurrence.reason === 'unknown-id'
+                            ? text('未知身份', 'Unknown identity')
+                            : occurrence.reason === 'name-only'
+                              ? text('姓名未确认', 'Name not confirmed')
+                              : text('旧身份未绑定', 'Legacy identity not bound')}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             {detail.status === 'invalid' && (
               <p className="run-note" data-tone="danger">{text(
                 '快照已失效，仅作历史查看，不作为当前派生状态。',
@@ -131,7 +153,9 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
                     `继承第 ${detail.baseline.predecessor.source.chapterNumber} 章快照`,
                     `Inherited from the chapter ${detail.baseline.predecessor.source.chapterNumber} snapshot`,
                   )
-                  : text('角色名单初始基线', 'Initial roster baseline')}</dd>
+                  : detail.baseline.kind === 'snapshot'
+                    ? text('前驱快照已随删章移除', 'Predecessor snapshot was removed with its chapter')
+                    : text('角色名单初始基线', 'Initial roster baseline')}</dd>
                 <dt>{text('输入哈希', 'Input hash')}</dt>
                 <dd>{detail.inputHash ? <code>{detail.inputHash}</code> : text('旧快照未记录', 'Not recorded in this older snapshot')}</dd>
                 <dt>{text('连续性代际', 'Continuity generation')}</dt>
