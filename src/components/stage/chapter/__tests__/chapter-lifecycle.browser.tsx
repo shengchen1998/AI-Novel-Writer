@@ -270,6 +270,73 @@ describe('单章视图的主按钮随五种状态变化', () => {
     expect(startWorkflow).not.toHaveBeenCalled()
   })
 
+  it('作者草稿：不经过 AI 审稿也能从更多操作直接定稿，定稿快照保留原稿身份与正文', async () => {
+    const draft = backend.addDraft({ status: 'draft', source: 'author', version: 2, sourceDependencies: [] })
+    await mount()
+    await openDraft(draft.id)
+    await expect.element(page.getByRole('button', { name: 'AI 审稿', exact: true })).toBeVisible()
+    await click('更多操作')
+    await act(async () => page.getByRole('menuitem', { name: '定稿…' }).click())
+    await expect.element(page.getByRole('dialog', { name: '定稿第 3 章？' })).toBeVisible()
+    await click('确认定稿')
+
+    await vi.waitFor(() => expect(workflows.createFinalizeWorkflow).toHaveBeenCalledOnce())
+    expect(workflows.createReviewOnlyWorkflow).not.toHaveBeenCalled()
+    const [params] = workflows.createFinalizeWorkflow.mock.calls[0]
+    expect({
+      draftId: params.snapshot.draftId,
+      chapterNumber: params.snapshot.chapterNumber,
+      content: params.snapshot.content,
+      draftContent: params.draftContent,
+      contentRevision: params.snapshot.contentRevision,
+    }).toEqual({ draftId: draft.id, chapterNumber: 3, content: ORIGINAL, draftContent: ORIGINAL, contentRevision: 1 })
+    expect(backend.state.drafts.find(candidate => candidate.id === draft.id)).toMatchObject({ version: 2, source: 'author', content: ORIGINAL })
+  })
+
+  it('作者草稿：可选 AI 审稿只带人工选择的意见修稿，经差异确认合并后再定稿', async () => {
+    const draft = backend.addDraft({ status: 'draft', source: 'author', sourceDependencies: [] })
+    await mount()
+    await openDraft(draft.id)
+    await click('AI 审稿')
+    await vi.waitFor(() => expect(workflows.createReviewOnlyWorkflow).toHaveBeenCalledOnce())
+    expect(workflows.createReviewOnlyWorkflow.mock.calls[0][0]).toMatchObject({ draftContent: ORIGINAL, sourceDraft: { id: draft.id, version: 1 } })
+
+    const review = backend.addReview(draft)
+    await act(async () => globalEventBus.emit('WORKFLOW_COMPLETE', { type: 'review', projectPath: SESSION.projectPath, projectSession: SESSION, runId: 'author-review' }))
+    await expect.element(page.getByRole('button', { name: '按 2 项意见修稿' })).toBeVisible()
+    await click('按 2 项意见修稿')
+    await vi.waitFor(() => expect(workflows.createRefineFromReviewWorkflow).toHaveBeenCalledOnce())
+    const confirmed = parseHumanConfirmedReviewSnapshot(workflows.createRefineFromReviewWorkflow.mock.calls[0][0].confirmedReviewContent)!
+    expect(confirmed.sourceReviewId).toBe(review.id)
+    expect(confirmed.items.filter(item => item.decision === 'apply').map(item => item.category)).toEqual(['前后矛盾', '节奏'])
+    expect(confirmed.items.find(item => item.category === '本章必现')?.decision).toBe('ignore')
+    expect(draft.content).toBe(ORIGINAL)
+
+    const revision = backend.addRevision(draft)
+    await act(async () => globalEventBus.emit('WORKFLOW_COMPLETE', { type: 'chapter_creation', projectPath: SESSION.projectPath, projectSession: SESSION, runId: 'author-revision' }))
+    await expect.element(page.getByRole('button', { name: '完成合并' })).toBeVisible()
+    expect(draft.content).toBe(ORIGINAL)
+    expect(activeTab()?.content).toBe(ORIGINAL)
+    await click('全部用修稿')
+    await click('完成合并')
+    await vi.waitFor(() => expect(backend.writes('db:revision-merge')).toHaveLength(1))
+    expect(backend.writes('db:revision-merge')[0][0]).toMatchObject({
+      revisionId: revision.id,
+      targetDraftId: draft.id,
+      expectedDraftContent: ORIGINAL,
+      mergedContent: REVISED,
+    })
+    await expect.element(page.getByRole('button', { name: '定稿', exact: true })).toBeVisible()
+    expect(draft).toMatchObject({ id: draft.id, version: 1, status: 'revised', source: 'author', content: REVISED })
+
+    await click('定稿')
+    await click('确认定稿')
+    await vi.waitFor(() => expect(workflows.createFinalizeWorkflow).toHaveBeenCalledOnce())
+    const [params] = workflows.createFinalizeWorkflow.mock.calls[0]
+    expect(params.snapshot).toMatchObject({ draftId: draft.id, chapterNumber: 3, content: REVISED })
+    expect(params.draftContent).toBe(REVISED)
+  })
+
   it('草稿：主按钮是 AI 审稿，按勾选的检查维度对当前正文启动审稿', async () => {
     const draft = backend.addDraft({ status: 'draft' })
     await mount()

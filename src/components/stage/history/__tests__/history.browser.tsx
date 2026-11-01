@@ -20,7 +20,10 @@ import StageHistory from '../StageHistory'
 
 const session = { projectId: '雨夜列车', projectPath: 'C:/novels/night-train', leaseId: '本次打开' }
 
-interface Draft { id: number; chapterNumber: number; version: number; status: string; content: string; stale?: boolean }
+interface Draft {
+  id: number; chapterNumber: number; version: number; status: string; content: string
+  source?: 'write' | 'rewrite' | 'author'; sourceDependencies?: unknown[]; dependenciesStale?: boolean; stale?: boolean
+}
 
 function snapshot<T>(store: StoreApi<T>): () => void {
   const state = store.getState()
@@ -37,7 +40,8 @@ let beforeCreate: (() => void) | null
 let invoke: ReturnType<typeof vi.fn<(channel: string, ...args: unknown[]) => Promise<unknown>>>
 
 const meta = (draft: Draft) => ({ id: draft.id, chapterNumber: draft.chapterNumber, version: draft.version, status: draft.status,
-  wordCount: draft.content.length, createdAt: `2026-10-0${draft.version} 21:05:00`, dependenciesStale: draft.stale ?? false })
+  source: draft.source ?? 'write', sourceDependencies: draft.sourceDependencies ?? [],
+  wordCount: draft.content.length, createdAt: `2026-10-0${draft.version} 21:05:00`, dependenciesStale: draft.dependenciesStale ?? draft.stale ?? false })
 
 beforeEach(() => {
   drafts = [
@@ -118,6 +122,13 @@ async function openChapterThree() {
 }
 
 describe('版本历史', () => {
+  it('作者草稿没有来源依赖时，版本历史不显示来源过期警告', async () => {
+    drafts = [{ id: 11, chapterNumber: 3, version: 1, status: 'draft', source: 'author', sourceDependencies: [], dependenciesStale: false, content: '作者独立完成的本章正文。' }]
+    await openChapterThree()
+    expect(host!.textContent).toContain('草稿 v1')
+    expect(host!.textContent).not.toContain('来源已过期')
+  })
+
   it('对比是只读的差异视图：标出增删、没有可编辑的地方、不打开修稿合并', async () => {
     await openChapterThree()
     await click(/草稿 v1/)
