@@ -165,7 +165,10 @@ function DraftChapter({ tab, filePath, projectKey }: { tab: EditorTab; filePath:
               step={stage === 'archived' || stage === 'superseded' || stage === null ? null : STAGE_STEP[stage]}
               focus={focus}
               version={draft.meta
-                ? <VersionSwitcher tab={tab} current={draft.meta} label={versionLabel} title={title} disabled={annotationRevision !== null || switching} whileSwitching={whileSwitching} onSave={() => draft.save(draft.currentBodyRef.current, true)} />
+                ? <>
+                  <VersionSwitcher tab={tab} current={draft.meta} label={versionLabel} title={title} disabled={annotationRevision !== null || switching} whileSwitching={whileSwitching} onSave={() => draft.save(draft.currentBodyRef.current, true)} />
+                  {draft.meta.source === 'author' && <span className="stage-ch-version-chip">{text('作者提供', 'Author-provided')}</span>}
+                </>
                 : <span className="stage-ch-version stage-ch-version-chip" role="status">{versionLabel}</span>}
             />
           )}
