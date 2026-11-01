@@ -78,13 +78,16 @@ export function missingSetup(config: WorkFacts['config']): SetupField[] {
 
 const begun = (row: ChapterRow) => row.hasFinal || (row.phase !== 'todo' && row.draft?.wordCount !== 0)
 
+const manuscriptBegun = (row: ChapterRow) => begun(row)
+  || (row.phase !== 'todo' && row.draft?.source === 'author' && row.draft.wordCount === 0)
+
 export function deriveStages(facts: WorkFacts, chapters: readonly ChapterRow[] = deriveChapters(facts)): StageStatus[] {
   const missing = missingSetup(facts.config)
   const filled = ARCHITECTURE_SECTIONS.filter(section => facts.architecture[section]).length
   const total = Math.max(0, facts.config.totalChapters || 0)
   const planned = facts.blueprints.length
   const finalized = chapters.filter(row => row.phase === 'final').length
-  const started = chapters.some(row => row.phase !== 'todo')
+  const started = chapters.some(manuscriptBegun)
   return [
     { stage: 'setup', missing,
       progress: missing.length === 0 ? DONE : { state: 'active', ratio: (SETUP_FIELDS.length - missing.length) / SETUP_FIELDS.length } },

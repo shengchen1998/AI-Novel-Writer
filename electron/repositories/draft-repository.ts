@@ -10,6 +10,7 @@ import { getProjectDb } from '../database'
 import { ContentRepository } from './content-repository'
 import { nextDraftVersion } from './draft-version'
 import type { DraftSourceDependency } from '../../src/shared/draft-source-dependency'
+import type { DraftSource } from '../../src/shared/draft-source'
 import { RECEIPTED_DRAFT_STATUS_SQL, WORKING_DRAFT_STATUS_SQL, isReceiptedDraftStatus, type DraftStatus } from '../../src/shared/draft-status'
 import { isOpenReopenDraft, reopenedFinal } from '../../src/shared/chapter-reopen'
 
@@ -353,7 +354,7 @@ export class DraftRepository {
     static create(params: {
         chapterNumber: number
         version?: number
-        source: 'write' | 'rewrite' | 'author'
+        source: DraftSource
         content: string
         wordCount: number
         sourceDependencies?: DraftSourceDependency[]

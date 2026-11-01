@@ -1,5 +1,6 @@
 import { ipc } from './ipc-client'
 import type { DraftStatus } from '../shared/draft-status'
+import type { DraftSource } from '../shared/draft-source'
 
 import type { DraftMeta as DB_DraftMeta } from '../../electron/repositories/draft-repository'
 import type { RevisionMeta as DB_RevisionMeta } from '../../electron/repositories/revision-repository'
@@ -14,7 +15,7 @@ export interface DraftMeta {
   wordCount?: number
   createdAt: string
   updatedAt?: string
-  source: 'write' | 'rewrite' | 'author'
+  source: DraftSource
   sourceDependencies?: DB_DraftMeta['sourceDependencies']
   dependenciesStale?: boolean
 

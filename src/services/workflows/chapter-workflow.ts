@@ -6,6 +6,7 @@ import { ipc } from '../ipc-client'
 import { ignoreFailure } from '../../shared/ignore-failure'
 
 import type { DraftStatus } from '../../shared/draft-status'
+import type { DraftSource } from '../../shared/draft-source'
 import type { ChapterThreadTask } from '../../shared/narrative-thread'
 import type { ProjectSessionContext } from '../../shared/ipc-channels'
 import { sameProjectPathKey } from '../../shared/project-session-context'
@@ -187,7 +188,7 @@ export async function parseDraftMeta(
     return {
       ...dbMeta,
       status: dbMeta.status as DraftStatus,
-      source: dbMeta.source as 'write' | 'rewrite',
+      source: dbMeta.source as DraftSource,
       fileName: `draft_v${dbMeta.version}.md`,
       filePath: formatResourceUri({ kind: 'draft', id: dbMeta.id }),
     } as unknown as DraftMeta
