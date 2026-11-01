@@ -6,6 +6,7 @@ dist
 dist-electron
 release
 electron/security/*.exe
+/electron/security/darwin-safe-file-system
 
 # 日志
 logs
