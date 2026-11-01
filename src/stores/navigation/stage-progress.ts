@@ -103,6 +103,10 @@ export function missingSetup(config: WorkFacts['config']): SetupField[] {
 /** 这一章动过笔：有定稿（之后又新建了空草稿也算），或当前稿有正文。只有空的当前稿不算；没记字数的旧稿按有正文算。 */
 const begun = (row: ChapterRow) => row.hasFinal || (row.phase !== 'todo' && row.draft?.wordCount !== 0)
 
+/** 阶段进度额外承认作者显式建立的空白工作稿；其他空白稿与自动聚焦仍沿用 begun。 */
+const manuscriptBegun = (row: ChapterRow) => begun(row)
+  || (row.phase !== 'todo' && row.draft?.source === 'author' && row.draft.wordCount === 0)
+
 /**
  * 四个阶段的状态，顺序固定为设定、架构、蓝图、正文。完成判定按 ia.md：设定必填项齐全，架构四节都有内容，
  * 蓝图至少 1 章（分批规划的作品不会因为没规划完就一直停在蓝图），正文按章统计。
@@ -114,7 +118,7 @@ export function deriveStages(facts: WorkFacts, chapters: readonly ChapterRow[] =
   const total = Math.max(0, facts.config.totalChapters || 0)
   const planned = facts.blueprints.length
   const finalized = chapters.filter(row => row.phase === 'final').length
-  const started = chapters.some(row => row.phase !== 'todo')
+  const started = chapters.some(manuscriptBegun)
   return [
     { stage: 'setup', missing,
       progress: missing.length === 0 ? DONE : { state: 'active', ratio: (SETUP_FIELDS.length - missing.length) / SETUP_FIELDS.length } },

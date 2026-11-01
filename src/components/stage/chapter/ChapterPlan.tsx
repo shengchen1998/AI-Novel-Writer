@@ -58,16 +58,17 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
     if (!session || row?.running || creatingAuthorDraftRef.current) return
     creatingAuthorDraftRef.current = true
     setCreatingAuthorDraft(true)
+    const refreshChapterDrafts = () => useDraftStore.getState().loadChapterDrafts(chapterNumber, session.projectPath, session)
     try {
       const created = await ipc.invokeWithProjectSession(session, 'db:draft-create', {
         chapterNumber, version: 1, source: 'author', content: '', wordCount: 0, sourceDependencies: [], onlyWhenChapterEmpty: true,
       }, session.projectPath)
       if (!created.success || created.id === undefined) {
         const failure = new Error(created.error || text('创建作者草稿失败', 'Could not create the author draft'))
-        await useDraftStore.getState().loadChapterDrafts(chapterNumber, session.projectPath, session)
+        await refreshChapterDrafts()
         throw failure
       }
-      await useDraftStore.getState().loadChapterDrafts(chapterNumber, session.projectPath, session)
+      await refreshChapterDrafts()
       if (!isProjectSessionCurrent(session)) return
       const draft = useDraftStore.getState().draftsByChapter[chapterNumber]?.find(candidate => candidate.id === created.id)
       if (!draft) throw new Error(text('创建后没能读到作者草稿，请重新打开本章', 'The author draft was created but could not be read. Reopen this chapter.'))
@@ -98,7 +99,7 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
           />
           <div className="stage-ch-actions">
             {blueprint && <WriteChapterPopover chapterNumber={chapterNumber} blueprint={blueprintWritePrefill(blueprint)} label={text('AI 写作', 'AI writing')} align="start" />}
-            <Button variant="secondary" disabled={creatingAuthorDraft || row?.running} aria-busy={creatingAuthorDraft} onClick={() => void createAuthorDraft()}>{text('自己写', 'Write it myself')}</Button>
+            <Button variant={blueprint ? 'secondary' : 'primary'} disabled={creatingAuthorDraft || row?.running} aria-busy={creatingAuthorDraft} onClick={() => void createAuthorDraft()}>{creatingAuthorDraft ? text('正在创建…', 'Creating…') : text('自己写', 'Write it myself')}</Button>
             <span className="stage-ch-hint">
               {blueprint
                 ? row?.running

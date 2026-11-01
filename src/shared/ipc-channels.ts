@@ -44,6 +44,7 @@ import type {
 } from './finalized-continuity'
 import type { DraftSourceDependency } from './draft-source-dependency'
 import type { BlueprintForPreflight, ConsistencyExemption } from './consistency-preflight'
+import type { DraftSource } from './draft-source'
 import type {
   NarrativeThreadAssignmentInput,
   NarrativeThreadEvent,
@@ -1010,7 +1011,7 @@ export interface DatabaseChannels {
     args: [request: FinalizedDraftImportRequest, expectedProjectPath: string]
     return: { success: boolean; receipt?: FinalizedDraftImportReceipt; error?: string }
   }
-  'db:draft-create': { args: [params: { chapterNumber: number; version: number; source: 'write' | 'rewrite' | 'author'; content: string; wordCount: number; sourceDependencies?: DraftSourceDependency[]; onlyWhenChapterEmpty?: boolean }, expectedProjectPath: string]; return: { success: boolean; id?: number; error?: string } }
+  'db:draft-create': { args: [params: { chapterNumber: number; version: number; source: DraftSource; content: string; wordCount: number; sourceDependencies?: DraftSourceDependency[]; onlyWhenChapterEmpty?: boolean }, expectedProjectPath: string]; return: { success: boolean; id?: number; error?: string } }
   'db:draft-list': { args: [chapterNumber: number, expectedProjectPath: string]; return: DraftMeta[] }
   'db:draft-list-all': { args: [expectedProjectPath: string]; return: DraftMeta[] }
   'db:draft-get-meta': { args: [id: number, expectedProjectPath: string]; return: DraftMeta | null }

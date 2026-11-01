@@ -108,12 +108,28 @@ describe('单章视图的主按钮随五种状态变化', () => {
     await mount()
     await act(async () => openChapterPlan(3, BLUEPRINT.title, SESSION))
     await expect.element(page.getByRole('heading', { name: '本章蓝图' })).toBeVisible()
+    expect(page.getByRole('button', { name: 'AI 写作', exact: true }).element().classList.contains('pi-btn--primary')).toBe(true)
+    expect(page.getByRole('button', { name: '自己写', exact: true }).element().classList.contains('pi-btn--primary')).toBe(false)
     await click('AI 写作')
     await vi.waitFor(() => expect(startWorkflow).toHaveBeenCalledOnce())
     const [chapterInfo] = workflows.createChapterWorkflow.mock.calls[0]
     expect({ number: chapterInfo.chapterNumber, title: chapterInfo.title, purpose: chapterInfo.purpose, characters: chapterInfo.characters })
       .toEqual({ number: 3, title: '雨夜车站', purpose: BLUEPRINT.purpose, characters: ['林舟', '老周'] })
     expect(started()[0].type).toBe('chapter_creation')
+  })
+
+  it('待写：没有蓝图时自己写是唯一主按钮', async () => {
+    await mount()
+    const fallback = backend.invoke.getMockImplementation()!
+    backend.invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:blueprint-get') return null
+      return fallback(channel, ...args)
+    })
+    await act(async () => openChapterPlan(3, BLUEPRINT.title, SESSION))
+
+    await expect.element(page.getByText('这一章还没有蓝图', { exact: true })).toBeVisible()
+    expect([...host!.querySelectorAll('.stage-ch-actions .pi-btn--primary')].map(element => element.textContent)).toEqual(['自己写'])
+    expect(page.getByRole('button', { name: 'AI 写作', exact: true }).elements()).toHaveLength(0)
   })
 
   it('待写：自己写创建空白作者草稿，输入与纯文本粘贴保存到同一稿，不产生生成运行', async () => {
@@ -156,7 +172,11 @@ describe('单章视图的主按钮随五种状态变化', () => {
     expect(backend.state.calls.filter(call => call.channel.startsWith('generation:'))).toEqual([])
   })
 
-  it('待写：同一帧重复点击只创建一份作者草稿', async () => {
+  it.each([
+    { locale: 'zh-CN', idle: '自己写', pending: '正在创建…', completed: 'AI 审稿' },
+    { locale: 'en-US', idle: 'Write it myself', pending: 'Creating…', completed: 'AI review' },
+  ] as const)('待写：$locale 创建期间显示进行中，同一帧重复点击只创建一份作者草稿', async ({ locale, idle, pending, completed }) => {
+    useLocaleStore.setState({ locale })
     await mount()
     await act(async () => openChapterPlan(3, BLUEPRINT.title, SESSION))
     let release = () => {}
@@ -166,7 +186,7 @@ describe('单章视图的主按钮随五种状态变化', () => {
       if (channel === 'db:draft-create') await hold
       return invoke(channel, ...args)
     })
-    const button = page.getByRole('button', { name: '自己写', exact: true }).element() as HTMLButtonElement
+    const button = page.getByRole('button', { name: idle, exact: true }).element() as HTMLButtonElement
 
     await act(async () => {
       button.click()
@@ -175,10 +195,14 @@ describe('单章视图的主按钮随五种状态变化', () => {
     })
     try {
       expect(backend.invoke.mock.calls.filter(([channel]) => channel === 'db:draft-create')).toHaveLength(1)
+      const pendingButton = page.getByRole('button', { name: pending, exact: true })
+      await expect.element(pendingButton).toBeDisabled()
+      await expect.element(pendingButton).toHaveAttribute('aria-busy', 'true')
+      expect(page.getByRole('button', { name: idle, exact: true }).elements()).toHaveLength(0)
     } finally {
       release()
     }
-    await expect.element(page.getByRole('button', { name: 'AI 审稿', exact: true })).toBeVisible()
+    await expect.element(page.getByRole('button', { name: completed, exact: true })).toBeVisible()
     expect(backend.state.drafts).toHaveLength(1)
   })
 

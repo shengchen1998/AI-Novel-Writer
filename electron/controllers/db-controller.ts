@@ -29,6 +29,7 @@ import type { CharacterRosterCommitRequest } from '../../src/shared/character-ro
 import type { BlueprintForPreflight } from '../../src/shared/consistency-preflight'
 import { DraftRepository } from '../repositories/draft-repository'
 import type { DraftSourceDependency } from '../../src/shared/draft-source-dependency'
+import type { DraftSource } from '../../src/shared/draft-source'
 import { FinalizedDraftImportRepository } from '../repositories/finalized-draft-import-repository'
 import { FinalizationRepository } from '../repositories/finalization-repository'
 import type { FinalizedDraftImportRequest } from '../../src/shared/finalized-draft-import'
@@ -757,7 +758,7 @@ export function registerDatabaseController() {
   ipcMain.handle('db:draft-create', async (_event, params: {
     chapterNumber: number
     version: number
-    source: 'write' | 'rewrite' | 'author'
+    source: DraftSource
     content: string
     wordCount: number
     sourceDependencies?: DraftSourceDependency[]

@@ -84,7 +84,7 @@ describe('在新外壳里打开一章', () => {
     installDrafts({})
     const draft = (chapterNumber: number, wordCount: number) => [{ id: chapterNumber * 10 + 1, chapterNumber, version: 1, status: 'draft', wordCount,
       createdAt: '2026-10-12 00:00:00', source: 'write', filePath: `ai-novel://draft/${chapterNumber * 10 + 1}`, fileName: 'draft_v1.md' }]
-    useDraftStore.setState({ draftsByChapter: { 4: draft(4, 1800), 5: draft(5, 2400), 6: draft(6, 0) } as never, dataProjectSession: SESSION, loading: false })
+    useDraftStore.setState({ draftsByChapter: { 4: draft(4, 1800), 5: draft(5, 2400), 6: [{ ...draft(6, 0)[0], source: 'author' }] } as never, dataProjectSession: SESSION, loading: false })
     navigate({ kind: 'stage', stage: 'manuscript' })
     await vi.waitFor(() => expect(activeTab()?.chapterNumber).toBe(5))
     expect(activeTab()).toMatchObject({ chapterNumber: 5, content: '第 5 章的正文' })
