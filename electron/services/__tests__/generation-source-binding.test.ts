@@ -195,11 +195,11 @@ describe('main rebuilt generation sources', () => {
             expect(text).not.toContain(f.chapter20Clue);
             expect(text).toContain(f.authorCharacterState);
             expect(text).toContain(f.legacyCharacterState);
-            expect(text).toContain(f.earlierDerivedState);
+            expect(text).not.toContain(f.earlierDerivedState);
             expect(db.prepare('SELECT * FROM characters WHERE character_id=?').get(f.characterId)).toEqual(stored);
         });
 
-        it('reopens a restored 20-chapter copy with readable authority and invalidates only replaced chapter 20 derived facts', async () => {
+        it('reopens a restored 20-chapter copy with readable authority and excludes unproved derived state', async () => {
             const f = await createProjectArchiveRoundtripFixture();
             cleanups.push(f.dispose);
             await f.exportAndRestore();
@@ -235,8 +235,8 @@ describe('main rebuilt generation sources', () => {
             ]));
             expect(restored.materials.find(item => item.ref.sourceId === `finalized:${f.chapter20DraftId}:${f.chapter20FinalizationId}`)?.text)
                 .toBe(f.chapter20Body);
-            expect(restored.materials.find(item => item.ref.sourceId === 'characters:all')?.text).toContain(f.chapter20Injury);
-            expect(currentDerivedCharacterFields(db, f.targetProjectId, f.sourceProjectId)[f.characterId]).toEqual(expect.arrayContaining(['physicalState', 'keyItems']));
+            expect(restored.materials.find(item => item.ref.sourceId === 'characters:all')?.text).not.toContain(f.chapter20Injury);
+            expect(currentDerivedCharacterFields(db, f.targetProjectId, f.sourceProjectId)[f.characterId] ?? []).toEqual([]);
             expect(restored.materials.find(item => item.ref.sourceId === 'continuity-locators')?.text).toContain(f.chapter20Clue);
             expect(restored.context.sources.some(item => /(?:candidate-old|attempt-unknown|outbox-old|import-old)/u.test(item.ref.sourceId))).toBe(false);
 
@@ -266,7 +266,7 @@ describe('main rebuilt generation sources', () => {
             expect(rebuiltCharacters).not.toContain(f.chapter20Clue);
             expect(rebuiltCharacters).toContain(f.authorCharacterState);
             expect(rebuiltCharacters).toContain(f.legacyCharacterState);
-            expect(rebuiltCharacters).toContain(f.earlierDerivedState);
+            expect(rebuiltCharacters).not.toContain(f.earlierDerivedState);
             const currentFields = currentDerivedCharacterFields(db, f.targetProjectId, f.sourceProjectId)[f.characterId];
             expect(currentFields).not.toContain('physicalState');
             expect(currentFields).not.toContain('keyItems');

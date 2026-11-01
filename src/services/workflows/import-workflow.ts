@@ -360,44 +360,6 @@ function productionDependencies(
         `Chapter ${chapter.number} was published to the manuscript directory.`,
       ))
     },
-    postprocessAuthorChapter: async (chapter, draft, run) => {
-      const current = useProjectStore.getState().currentProject
-      if (!current || !sameProjectSessionContext(session, projectSessionContextFromProject(current))) {
-        throw new Error(textForLocale(
-          run.locale,
-          '当前项目已切换，无法更新原稿连续性事实',
-          'The project changed before manuscript continuity could be updated.',
-        ))
-      }
-      const { RunFinalizePostProcessCommand } = await import('./commands/finalize-chapter.command')
-      const status = await new RunFinalizePostProcessCommand({
-        project: current,
-        chapterNumber: chapter.number,
-        chapterTitle: chapter.title,
-        draftContent: chapter.content,
-        draftId: draft.draftId,
-        finalizedSource: {
-          draftId: draft.draftId,
-          finalizationId: draft.finalizationId,
-          chapterNumber: chapter.number,
-          contentHash: draft.contentHash,
-        },
-        sourceLabel: textForLocale(
-          run.locale,
-          `第${chapter.number}章作者原稿定稿`,
-          `Author manuscript Chapter ${chapter.number} finalization`,
-        ),
-        stopOnFailure: true,
-        onlyFailed: true,
-      }).execute({ step: {} as never, context, callbacks })
-      if (!status.allCriticalPassed) {
-        throw new Error(textForLocale(
-          run.locale,
-          `第 ${chapter.number} 章连续性后处理未完成`,
-          `Continuity post-processing did not complete for Chapter ${chapter.number}.`,
-        ))
-      }
-    },
     refresh: async run => {
       callbacks.log(textForLocale(run.locale, '正在刷新项目数据...', 'Refreshing project data...'))
       await refreshImportDerivedFileTreeBestEffort(
@@ -546,8 +508,8 @@ export function createImportWorkflow(params: ImportWorkflowParams): WorkflowDefi
           ['发布实体正文', 'Publish manuscript files'],
           ['按持久检查点发布正文文件；失败后可安全重试', 'Publish manuscript files with durable checkpoints and safe retries.']),
         importStep(params.run, params.executionOwner, 'author-postprocess',
-          ['更新连续性事实', 'Update continuity facts'],
-          ['从权威定稿更新章节事实与角色状态，不导入参照语料', 'Update chapter facts and character state from authoritative text without importing reference prose.']),
+          ['登记章节状态需求', 'Register chapter-state snapshot needs'],
+          ['记录待建立的章节角色状态快照，不调用模型；可在运行侧页确认重建', 'Record chapter-state snapshots to build without model calls; rebuild them from the run sheet after confirmation.']),
         ...inferenceSteps,
         importStep(params.run, params.executionOwner, 'refresh',
           ['刷新项目状态', 'Refresh project state'],
@@ -557,8 +519,8 @@ export function createImportWorkflow(params: ImportWorkflowParams): WorkflowDefi
         mode: 'silent',
         message: textForLocale(
           params.run.locale,
-          '作者原稿已作为权威定稿导入，可以从下一章继续创作。',
-          'The manuscript is now authoritative finalized text. You can continue from the next chapter.',
+          '作者原稿已作为权威定稿导入；可在运行侧页查看并重建章节状态。',
+          'The manuscript is now authoritative finalized text. Review and rebuild chapter state from the run sheet.',
         ),
       },
     }

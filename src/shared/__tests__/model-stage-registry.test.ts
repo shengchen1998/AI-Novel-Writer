@@ -94,7 +94,6 @@ describe('one stage per workflow definition', () => {
 
   const MIXED_BY_DESIGN: Record<string, string> = {
     createBatchChapterWorkflow: '批量写作强制显式模型，自动定稿由主进程按写稿运行的模型继承',
-    createImportWorkflow: '导入首跑冻结模型，导入里的定稿后处理沿用导入模型',
     createReviewRevisionRecoveryWorkflow: '恢复只运行其中一个命令，模型取自冻结的恢复记录',
   }
 

@@ -140,6 +140,8 @@ beforeEach(async () => {
     // 运行侧页读恢复项：这里都没有。
     if (channel === 'finalized-character:read-state-continuity') return []
     if (channel === 'finalized-character:read-state-cache') return { status: 'ready', reason: null, snapshotId: null, source: null }
+    if (channel === 'finalized-character:plan-state-rebuild') return null
+    if (channel === 'finalized-character:list-state-rebuilds') return []
     if (channel === 'generation:list-recovery') return { planning: [], editors: [], reviews: [], batches: [], drafts: [], partial: false }
     if (['db:recovery-candidate-list', 'generation:list', 'skills:list-user'].includes(channel)) return []
     if (channel === 'fs:check-exists') return false
@@ -541,7 +543,7 @@ describe('current-project reference import', () => {
     expect(startWorkflow).toHaveBeenCalledOnce()
     const workflow = startWorkflow.mock.calls[0][0] as WorkflowDefinition
     expect(workflow.steps.map(step => step.name)).toEqual([
-      '提交权威定稿快照', '发布实体正文', '更新连续性事实', '刷新项目状态',
+      '提交权威定稿快照', '发布实体正文', '登记章节状态需求', '刷新项目状态',
     ])
     expect(workflow.steps.map(step => step.name).join('\n')).not.toMatch(/知识库|文风|蓝图/)
     const prepareCall = invoke.mock.calls.find(([channel]) => channel === 'db:import-run-prepare-inspection')

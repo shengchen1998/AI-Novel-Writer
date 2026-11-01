@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const ipcMocks = vi.hoisted(() => ({ invoke: vi.fn() }))
 const characterSyncMocks = vi.hoisted(() => ({ retry: vi.fn() }))
 const commandMocks = vi.hoisted(() => ({ blueprintContext: undefined as WorkflowContext | undefined }))
+const finalizeMocks = vi.hoisted(() => ({ postProcess: vi.fn() }))
 vi.mock('../../ipc-client', () => ({
   ipc: { invokeWithProjectSession: ipcMocks.invoke },
 }))
@@ -17,6 +18,12 @@ vi.mock('../commands/import-novel.command', () => ({
       commandMocks.blueprintContext = params.context
       throw new Error('stop-after-blueprint-prompt-context')
     }
+  },
+}))
+vi.mock('../commands/finalize-chapter.command', () => ({
+  RunFinalizePostProcessCommand: class {
+    constructor() { finalizeMocks.postProcess() }
+    async execute(): Promise<{ allCriticalPassed: boolean }> { return { allCriticalPassed: true } }
   },
 }))
 
@@ -394,6 +401,60 @@ describe('createImportWorkflow', () => {
     expect(ipcMocks.invoke.mock.calls.map(call => call[1])).not.toContain('llm:generate')
   })
 
+  it('author postprocess only checkpoints snapshot needs without entering finalization generation', async () => {
+    let snapshot = run({
+      purpose: 'author-manuscript', authorInference: false,
+      effectNamespace: 'import:author-manuscript:import-run-1', stage: 'author-postprocess',
+      authorityFingerprint: 'c'.repeat(64), manifestFingerprint: 'd'.repeat(64),
+      completedBatches: { 'author-commit': ['done'], 'author-publish': ['chapter:1'] },
+    })
+    const receipt: ImportRunEffectReceipt = {
+      schemaVersion: 1, runId: snapshot.id, effectNamespace: snapshot.effectNamespace,
+      effectKey: 'author-finalized-batch', stage: 'author-commit', batchId: 'done', kind: 'author-finalized-batch',
+      payloadHash: 'e'.repeat(64), state: 'committed', payload: {}, effectReceipt: {
+        operationId: 'author-import:import-run-1', payloadHash: 'e'.repeat(64), chapterNumbers: [1], idempotent: false,
+        drafts: [{ chapterNumber: 1, draftId: 1, finalizationId: 'final-1', contentHash: 'f'.repeat(64),
+          targetFileName: 'Chapter 1.txt', status: 'finalized', publicationStatus: 'published' }],
+      }, createdAt: '2026-01-01', updatedAt: '2026-01-01',
+    }
+    ipcMocks.invoke.mockImplementation(async (_session, channel: string, ...args: unknown[]) => {
+      if (channel === 'db:import-run-get') return snapshot
+      if (channel === 'db:import-run-start-resume') return {
+        success: true,
+        start: { run: snapshot, execution: { owner: executionOwner, epoch: 1, expiresAt: Number.MAX_SAFE_INTEGER } },
+      }
+      if (channel === 'db:import-run-renew-execution') return {
+        success: true, execution: { owner: executionOwner, epoch: 1, expiresAt: Number.MAX_SAFE_INTEGER },
+      }
+      if (channel === 'db:import-run-effect-receipt-get') return receipt
+      if (channel === 'db:import-run-list-chapters') return (args[1] as number) === 0 ? [{
+        number: 1, title: 'Chapter 1', content: 'Imported prose', contentFingerprint: 'a'.repeat(64), contentSize: 13,
+      }] : []
+      if (channel === 'db:draft-get-meta') return { status: 'finalized' }
+      if (channel === 'db:import-run-complete-batch') {
+        snapshot = { ...snapshot, completedBatches: { ...snapshot.completedBatches, 'author-postprocess': ['chapter:1'] } }
+        return { success: true, run: snapshot, cancelApplied: false }
+      }
+      if (channel === 'db:import-run-advance-stage') {
+        snapshot = { ...snapshot, stage: 'refresh' }
+        return { success: true, run: snapshot }
+      }
+      throw new Error(`Unexpected channel ${channel}`)
+    })
+    const workflow = createImportWorkflow({
+      projectPath: session.projectPath, projectSession: session, run: snapshot, executionOwner, authorChapterNumbers: [1],
+    })
+
+    await workflow.steps[2]!.executor({} as never, context(), callbacks)
+
+    expect(snapshot.stage).toBe('refresh')
+    expect(snapshot.completedBatches['author-postprocess']).toEqual(['chapter:1'])
+    expect(finalizeMocks.postProcess).not.toHaveBeenCalled()
+    expect(ipcMocks.invoke.mock.calls.map(call => call[1]).filter(channel => (
+      String(channel).startsWith('generation:') || String(channel).startsWith('finalization-generation:')
+    ))).toEqual([])
+  })
+
   it('creates an author-only finalization plan without reference analysis stages', () => {
     const workflow = createImportWorkflow({
       projectPath: session.projectPath,
@@ -410,7 +471,7 @@ describe('createImportWorkflow', () => {
 
     expect(workflow.title).toBe('导入作者原稿（1 章）')
     expect(workflow.steps.map(step => step.name)).toEqual([
-      '提交权威定稿快照', '发布实体正文', '更新连续性事实', '刷新项目状态',
+      '提交权威定稿快照', '发布实体正文', '登记章节状态需求', '刷新项目状态',
     ])
     expect(workflow.steps.map(step => step.name).join('\n')).not.toMatch(/知识库|文风|蓝图/)
   })
@@ -428,7 +489,7 @@ describe('createImportWorkflow', () => {
     })
 
     expect(workflow.steps.map(step => step.name)).toEqual([
-      '提交权威定稿快照', '发布实体正文', '更新连续性事实',
+      '提交权威定稿快照', '发布实体正文', '登记章节状态需求',
       '反推设定、架构与角色', '反推文风', '为没有蓝图的章反推蓝图', '刷新项目状态',
     ])
     expect(workflow.resourceKeys).toEqual(expect.arrayContaining(['novel-config', 'architecture', 'blueprints', 'character-roster']))

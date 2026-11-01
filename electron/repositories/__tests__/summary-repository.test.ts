@@ -102,7 +102,7 @@ describe('finalized continuity projection', () => {
         chapterNumber: 1,
         contentHash: draft.contentHash,
       },
-      sourceStatus: 'legacy',
+      sourceStatus: 'current',
     }])
   })
 
@@ -369,7 +369,7 @@ describe('finalized continuity projection', () => {
     })
     expect(SummaryRepository.listFinalizedContinuityBefore(3)[0]).toMatchObject({
       chapterNotes: '新水位重新提炼：铜钥匙未交出。',
-      sourceStatus: 'legacy',
+      sourceStatus: 'current',
     })
   })
 

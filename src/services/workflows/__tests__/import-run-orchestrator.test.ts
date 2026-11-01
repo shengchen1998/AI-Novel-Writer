@@ -149,7 +149,6 @@ describe('ImportRunOrchestrator', () => {
     }) })
     deps.getAuthorCommitReceipt = vi.fn(async () => receipt)
     deps.publishAuthorChapter = vi.fn(async () => undefined)
-    deps.postprocessAuthorChapter = vi.fn(async () => undefined)
     const orchestrator = new ImportRunOrchestrator(deps)
 
     await orchestrator.executeStage('run-1', 'author-commit', 'test-runner', { cancelled: false }, callbacks)
@@ -159,7 +158,6 @@ describe('ImportRunOrchestrator', () => {
 
     expect(deps.commitAuthorManuscript).toHaveBeenCalledTimes(1)
     expect(deps.publishAuthorChapter).toHaveBeenCalledTimes(2)
-    expect(deps.postprocessAuthorChapter).toHaveBeenCalledTimes(2)
     expect(deps.importReference).not.toHaveBeenCalled()
     expect(deps.inferGlobal).not.toHaveBeenCalled()
     expect(deps.analyzeStyle).not.toHaveBeenCalled()
@@ -228,20 +226,19 @@ describe('ImportRunOrchestrator', () => {
     deps.isAuthorDraftReplaced = vi.fn(async draft => draft.draftId === 1)
     const projected: string[] = []
     deps.publishAuthorChapter = vi.fn(async chapter => { projected.push(`publish:${chapter.number}`) })
-    deps.postprocessAuthorChapter = vi.fn(async chapter => { projected.push(`postprocess:${chapter.number}`) })
     const orchestrator = new ImportRunOrchestrator(deps)
 
     await orchestrator.executeStage('run-1', 'author-publish', 'test-runner', { cancelled: false }, callbacks)
     await orchestrator.executeStage('run-1', 'author-postprocess', 'test-runner', { cancelled: false }, callbacks)
 
     expect({ projected, completed: getRun().completedBatches, stage: getRun().stage }).toEqual({
-      projected: ['publish:2', 'postprocess:2'],
+      projected: ['publish:2'],
       completed: { 'author-publish': ['chapter:1', 'chapter:2'], 'author-postprocess': ['chapter:1', 'chapter:2'] },
       stage: 'refresh',
     })
   })
 
-  it('resumes failed author postprocess from its durable chapter checkpoint without repeating completed work', async () => {
+  it('resumes snapshot-need checkpoints without invoking legacy automatic postprocess', async () => {
     const { deps, getRun } = harness(3, {
       purpose: 'author-manuscript',
       effectNamespace: 'import:author-manuscript:run-1',
@@ -250,6 +247,7 @@ describe('ImportRunOrchestrator', () => {
       completedBatches: {
         'author-commit': ['done'],
         'author-publish': ['chapter:1', 'chapter:2', 'chapter:3'],
+        'author-postprocess': ['chapter:1'],
       },
     })
     const receipt: FinalizedDraftImportReceipt = {
@@ -262,32 +260,15 @@ describe('ImportRunOrchestrator', () => {
       idempotent: false,
     }
     deps.getAuthorCommitReceipt = vi.fn(async () => receipt)
-    const postprocessed: number[] = []
-    let failOnce = true
-    deps.postprocessAuthorChapter = vi.fn(async chapter => {
-      postprocessed.push(chapter.number)
-      if (chapter.number === 2 && failOnce) {
-        failOnce = false
-        throw new Error('postprocess unavailable')
-      }
-    })
-    const orchestrator = new ImportRunOrchestrator(deps)
 
-    await expect(orchestrator.executeStage(
-      'run-1', 'author-postprocess', 'test-runner', { cancelled: false }, callbacks,
-    )).rejects.toThrow('postprocess unavailable')
-    expect(getRun()).toMatchObject({
-      stage: 'author-postprocess', status: 'failed',
-      completedBatches: { 'author-postprocess': ['chapter:1'] },
-    })
-
-    await orchestrator.executeStage(
+    await new ImportRunOrchestrator(deps).executeStage(
       'run-1', 'author-postprocess', 'test-runner', { cancelled: false }, callbacks,
     )
-    expect(postprocessed.filter(number => number === 1)).toHaveLength(1)
-    expect(postprocessed.filter(number => number === 2)).toHaveLength(2)
-    expect(postprocessed.filter(number => number === 3)).toHaveLength(1)
-    expect(getRun().stage).toBe('refresh')
+
+    expect(getRun()).toMatchObject({
+      stage: 'refresh',
+      completedBatches: { 'author-postprocess': ['chapter:1', 'chapter:2', 'chapter:3'] },
+    })
   })
 
   it('keeps renewing its lease while one knowledge effect runs longer than the original TTL', async () => {
@@ -734,7 +715,6 @@ describe('ImportRunOrchestrator', () => {
       drafts: [{ chapterNumber: 1, draftId: 1, finalizationId: 'final-1', contentHash: 'f'.repeat(64),
         targetFileName: 'Chapter 1.txt', status: 'finalized' as const, publicationStatus: 'pending' as const }],
     }))
-    deps.postprocessAuthorChapter = vi.fn(async () => undefined)
 
     await new ImportRunOrchestrator(deps).executeStage('run-1', 'author-postprocess', 'test-runner', { cancelled: false }, callbacks)
 
@@ -914,7 +894,6 @@ describe('ImportRunOrchestrator failure copy follows the import run locale', () 
     }
     fixture.deps.getAuthorCommitReceipt = vi.fn(async () => receipt)
     fixture.deps.publishAuthorChapter = vi.fn(async () => undefined)
-    fixture.deps.postprocessAuthorChapter = vi.fn(async () => undefined)
     return fixture
   }
 

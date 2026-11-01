@@ -17,6 +17,7 @@ import { readPortableRuntimeFreeze } from '../../services/portable-runtime-freez
 import { ChapterCharacterStateSnapshotRepository } from '../../repositories/chapter-character-state-snapshot-repository'
 import { invalidateContinuityProjectionFrom } from '../../repositories/summary-repository'
 import { refreshCharacterIdentityProjection } from '../../repositories/character-roster-repository'
+import { countDraftUnits } from '../../../src/shared/draft-units'
 
 type Handler = (event: unknown, ...args: unknown[]) => Promise<unknown>
 const mocks = vi.hoisted(() => ({ handlers: new Map<string, Handler>(), globalRoot: '' }))
@@ -1468,5 +1469,52 @@ describe('first chapter character-state snapshot through real finalization and g
       status: 'invalid',
       validity: 'superseded',
     })
+  })
+
+  it('imports finalized chapters as snapshot gaps with frozen identities and rebuilds only on confirmation', async () => {
+    seedCharacter('character-lin', '林岚', { location: '作者保留的地点' }, {
+      location: { kind: 'author', chapterNumber: 0, revision: 1 },
+    })
+    const cachedBefore = getProjectDb()!.prepare('SELECT * FROM characters WHERE character_id=?')
+      .get('character-lin')
+    const chapters = [1, 2].map(chapterNumber => {
+      const content = `Imported chapter ${chapterNumber}: Lin arrives at the north tower.`
+      return { chapterNumber, title: `Imported ${chapterNumber}`, content, wordCount: countDraftUnits(content) }
+    })
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+
+    const imported = await invoke<{ success: boolean; receipt: { drafts: Array<{ finalizationId: string }> } }>(
+      'db:draft-import-finalized-batch',
+      { operationId: 'author-import:snapshot-gaps', chapters },
+      session.projectPath,
+    )
+
+    expect(imported.success).toBe(true)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(getProjectDb()!.prepare('SELECT * FROM characters WHERE character_id=?').get('character-lin')).toEqual(cachedBefore)
+    expect(getProjectDb()!.prepare('SELECT COUNT(*) AS count FROM chapter_character_state_snapshots').pluck().get()).toBe(0)
+    expect(getProjectDb()!.prepare("SELECT COUNT(*) AS count FROM character_identity_proposals WHERE proposal_id LIKE 'fcs:import-%'").pluck().get()).toBe(2)
+    const continuity = await invoke<Array<{ status: string; source: { chapterNumber: number } }>>(
+      'finalized-character:read-state-continuity',
+    )
+    expect(continuity.map(entry => [entry.source.chapterNumber, entry.status])).toEqual([
+      [1, 'missing-snapshot'], [2, 'waiting-predecessor'],
+    ])
+    await expect(listSnapshots('character-lin')).resolves.toEqual([])
+    await expect(invoke('finalized-character:plan-state-rebuild', {})).resolves.toMatchObject({
+      range: { startChapter: 1, endChapter: 2 },
+    })
+    expect(fetch).not.toHaveBeenCalled()
+
+    const rebuildFetch = streamResponses([JSON.stringify({ updates: [] }), JSON.stringify({ updates: [] })])
+    await expect(invoke('finalized-character:begin-state-rebuild', {
+      rebuildId: 'e30a1256-e185-45d1-b44e-a81e5357c0f5', modelId: model.id,
+    })).resolves.toMatchObject({ status: 'completed', completedChapters: 2, nextChapterNumber: null })
+    expect(rebuildFetch).toHaveBeenCalledTimes(2)
+    expect(await listSnapshots('character-lin')).toHaveLength(2)
+    await expect(invoke('finalized-character:read-state-continuity')).resolves.toMatchObject([
+      { status: 'valid' }, { status: 'valid' },
+    ])
   })
 })
