@@ -119,6 +119,39 @@ describe('draft source dependencies', () => {
     })
   })
 
+  it('keeps an author draft free of inferred chapter-order dependencies and stale warnings', () => {
+    const authorId = DraftRepository.create({
+      chapterNumber: 3,
+      source: 'author',
+      content: '作者独立完成的第三章。',
+      wordCount: 10,
+      sourceDependencies: [],
+    })
+    const predecessorId = DraftRepository.create({
+      chapterNumber: 2,
+      source: 'write',
+      content: '后来才生成的第二章。',
+      wordCount: 9,
+    })
+
+    expect(DraftRepository.getMeta(authorId)).toMatchObject({
+      source: 'author',
+      sourceDependencies: [],
+      dependenciesStale: false,
+    })
+    DraftRepository.updateContent(predecessorId, '第二章后来又被改写。', 9)
+    finalize(predecessorId, 2, '第二章后来又被改写。', 'finalization-author-independence')
+    closeProjectDatabase()
+    initProjectDatabase(projectRoot)
+
+    expect(DraftRepository.getFull(authorId)).toMatchObject({
+      source: 'author',
+      content: '作者独立完成的第三章。',
+      sourceDependencies: [],
+      dependenciesStale: false,
+    })
+  })
+
   it('revalidates claimed dependencies at the main-process repository boundary', () => {
     const sourceContent = '被冻结的候选正文。'
     const sourceId = DraftRepository.create({
