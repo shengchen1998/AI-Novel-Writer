@@ -13,6 +13,7 @@ import { RunCard, RunDetails } from './RunCard'
 import { RunDiagnostics } from './RunDiagnostics'
 import { RunRecoveryList } from './RunRecoveryList'
 import CharacterStateContinuity from '../characters/CharacterStateContinuity'
+import CharacterStateRebuild from './CharacterStateRebuild'
 import { clockTime } from './run-format'
 
 type Text = (zh: string, en: string) => string
@@ -77,7 +78,7 @@ function ActiveRuns({ runs, last, recovery, focusRunId, hasHistory, text }: {
   if (nothing) {
     return (
       <>
-        <CharacterStateContinuity />
+        <CharacterStateContinuity /><CharacterStateRebuild />
         <EmptyState
           heading={text('没有进行中的运行', 'Nothing is running')}
           description={text('写作此章、AI 审稿等操作开始后，步骤与实时输出会出现在这里。', 'When you write a chapter or run an AI review, its steps and live output appear here.')}
@@ -90,7 +91,7 @@ function ActiveRuns({ runs, last, recovery, focusRunId, hasHistory, text }: {
   }
   return (
     <div className="run-list">
-      <CharacterStateContinuity />
+      <CharacterStateContinuity /><CharacterStateRebuild />
       {ordered.map(run => <RunCard key={run.id} run={run} focused={run.id === focusRunId} primary={run.id === primaryId} />)}
       {showLast && <RunCard run={last} caption={text('上一次运行', 'Last run')} primary />}
       <RunRecoveryList recovery={recovery} liveRuns={runs} />

@@ -11,6 +11,7 @@ import {
   type ChapterCharacterStateSnapshotDiff,
   type ChapterCharacterStateSnapshotDiffSide,
   type ChapterCharacterStateSnapshotField,
+  type ChapterCharacterStateSnapshotPredecessor,
   type ChapterCharacterStateSnapshotSummary,
   type ChapterCharacterStateSnapshotValidity,
   type ChapterCharacterStateSnapshotVersionSummary,
@@ -127,17 +128,21 @@ function summaryFromRows(db: Database.Database, row: SnapshotRow & CharacterRow,
   }
 }
 
-function readValidityByFinalization(db: Database.Database): Map<string, ChapterCharacterStateSnapshotValidity> {
-  return new Map(readContinuity(db).map(entry => [entry.source.finalizationId,
-    entry.status === 'valid' ? 'valid' : entry.status === 'waiting-predecessor' ? 'waiting-predecessor' : 'invalid']))
+function readValidityBySnapshot(db: Database.Database): Map<string, ChapterCharacterStateSnapshotValidity> {
+  const validity = new Map<string, ChapterCharacterStateSnapshotValidity>()
+  for (const entry of readContinuity(db)) {
+    if (entry.snapshot) validity.set(entry.snapshot.snapshotId,
+      entry.status === 'valid' ? 'valid' : entry.status === 'waiting-predecessor' ? 'waiting-predecessor' : 'invalid')
+  }
+  return validity
 }
 
 function versionSummaryFromRows(
   db: Database.Database,
   row: SnapshotRow & CharacterRow,
-  validityByFinalization: Map<string, ChapterCharacterStateSnapshotValidity>,
+  validityBySnapshot: Map<string, ChapterCharacterStateSnapshotValidity>,
 ): ChapterCharacterStateSnapshotVersionSummary {
-  const validity = validityByFinalization.get(row.finalization_id) ?? 'superseded'
+  const validity = validityBySnapshot.get(row.snapshot_id) ?? 'superseded'
   return {
     ...summaryFromRows(db, row, validity === 'valid' ? 'valid' : 'invalid'),
     validity,
@@ -272,9 +277,26 @@ function readContinuity(db: Database.Database): ChapterCharacterStateContinuityE
   let chainValid = true
   let previousValid: SnapshotRow | undefined
   let gapChapterNumber: number | undefined
+  const rebuildAuthority = new Map<string, number>()
   return sources.map((source, index) => {
-    const row = db.prepare('SELECT * FROM chapter_character_state_snapshots WHERE finalization_id=?')
-      .get(source.finalization_id) as SnapshotRow | undefined
+    const rows = db.prepare('SELECT * FROM chapter_character_state_snapshots WHERE finalization_id=? ORDER BY rowid')
+      .all(source.finalization_id) as SnapshotRow[]
+    const rebuilds = rows.flatMap(row => {
+      const rebuildId = /^rebuild:([0-9a-f-]{36}):/iu.exec(row.operation_id)?.[1]
+      if (!rebuildId) return []
+      let ordinal = rebuildAuthority.get(rebuildId)
+      if (ordinal === undefined) {
+        ordinal = (db.prepare(`SELECT rowid FROM generation_runs
+          WHERE json_extract(binding_json,'$.sourceManifest.characterStateRebuild.rebuildId')=? ORDER BY rowid LIMIT 1`)
+          .pluck().get(rebuildId) as number | undefined) ?? -1
+        rebuildAuthority.set(rebuildId, ordinal)
+      }
+      return [{ rebuildId, ordinal }]
+    })
+    const preferred = rebuilds.sort((left, right) => right.ordinal - left.ordinal)[0]
+    const row = preferred
+      ? rows.find(candidate => candidate.operation_id === `rebuild:${preferred.rebuildId}:${source.finalization_id}`)
+      : rows[0]
     let snapshot: ChapterCharacterStateContinuityEntry['snapshot']
     let valid = false
     if (row) {
@@ -366,12 +388,13 @@ function captureBaseline(context: FinalizedCharacterContext, db: Database.Databa
 }
 
 function buildPayload(context: FinalizedCharacterContext, updates: FinalizedCharacterStateUpdate[], chapterTitle: string,
-  baseline: ChapterCharacterStateSnapshotBaseline, unresolved: FinalizedCharacterStateOccurrence[]): SnapshotPayload {
+  baseline: ChapterCharacterStateSnapshotBaseline, unresolved: FinalizedCharacterStateOccurrence[],
+  operationId = operationIdFor(context.source)): SnapshotPayload {
   const characters = structuredClone(baseline.characters)
   for (const update of updates) applyUpdate(context, characters, update)
   return {
     version: CHAPTER_CHARACTER_STATE_SNAPSHOT_SCHEMA_VERSION,
-    operationId: operationIdFor(context.source),
+    operationId,
     source: structuredClone(context.source),
     chapterTitle,
     characters,
@@ -432,6 +455,7 @@ export class ChapterCharacterStateSnapshotRepository {
     db: Database.Database,
     unresolved: FinalizedCharacterStateOccurrence[],
     frozenBaseline?: ChapterCharacterStateSnapshotBaseline,
+    operationId = operationIdFor(context.source),
   ): string | null {
     if (context.identityStatus !== 'bound') return null
     const source = db.prepare(`SELECT chapter_title AS chapterTitle,content_snapshot AS contentSnapshot,
@@ -440,7 +464,6 @@ export class ChapterCharacterStateSnapshotRepository {
       } | undefined
     if (!source || source.contentHash !== context.source.contentHash || sha256(source.contentSnapshot) !== context.source.contentHash
       || source.contentSnapshot !== context.content) throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_SOURCE_CHANGED')
-    const operationId = operationIdFor(context.source)
     const snapshotId = snapshotIdFor(operationId)
     const existing = readPayload(db, snapshotId)
     if (existing) {
@@ -451,7 +474,7 @@ export class ChapterCharacterStateSnapshotRepository {
     }
     const baseline = frozenBaseline ?? captureBaseline(context, db)
     if (!baseline) return null
-    const payload = buildPayload(context, updates, source.chapterTitle, baseline, unresolved)
+    const payload = buildPayload(context, updates, source.chapterTitle, baseline, unresolved, operationId)
     const snapshotHash = sha256(JSON.stringify(payload))
     insertPayload(db, payload, snapshotId, snapshotHash)
     const saved = readPayload(db, snapshotId)
@@ -460,12 +483,26 @@ export class ChapterCharacterStateSnapshotRepository {
     return snapshotId
   }
 
+  static readForOperation(db: Database.Database, operationId: string): {
+    snapshotId: string
+    inputHash: string | null
+    predecessor: ChapterCharacterStateSnapshotPredecessor | null
+  } | null {
+    const row = db.prepare('SELECT * FROM chapter_character_state_snapshots WHERE operation_id=?').get(operationId) as SnapshotRow | undefined
+    if (!row) return null
+    const saved = readPayload(db, row.snapshot_id)
+    if (!saved || saved.payload.operationId !== operationId || sha256(JSON.stringify(saved.payload)) !== row.snapshot_hash) {
+      throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_INVALID')
+    }
+    return { snapshotId: row.snapshot_id, inputHash: row.input_hash, predecessor: baselineFromRow(db, row).predecessor }
+  }
+
   static listForCharacter(db: Database.Database, characterId: string): ChapterCharacterStateSnapshotVersionSummary[] {
     const rows = db.prepare(`SELECT s.*,c.character_id,c.display_name_snapshot,c.aliases_json,c.updated_at_chapter
       FROM chapter_character_state_snapshots s
       JOIN chapter_character_state_snapshot_characters c ON c.snapshot_id=s.snapshot_id
       WHERE c.character_id=? ORDER BY s.chapter_number,s.created_at,s.snapshot_id`).all(characterId) as Array<SnapshotRow & CharacterRow>
-    const validityByFinalization = readValidityByFinalization(db)
+    const validityByFinalization = readValidityBySnapshot(db)
     return rows.map(row => versionSummaryFromRows(db, row, validityByFinalization))
   }
 
@@ -481,7 +518,7 @@ export class ChapterCharacterStateSnapshotRepository {
       throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_INVALID')
     }
     return {
-      ...versionSummaryFromRows(db, row, readValidityByFinalization(db)),
+      ...versionSummaryFromRows(db, row, readValidityBySnapshot(db)),
       character,
       unresolved: saved.payload.unresolved ?? [],
     }

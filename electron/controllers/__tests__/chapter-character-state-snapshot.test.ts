@@ -90,6 +90,26 @@ function stream(content: string) {
   return fetch
 }
 
+function streamResponses(contents: string[]) {
+  let index = 0
+  const fetch = vi.fn(async (url: unknown, init?: { body?: string }) => {
+    void url
+    void init
+    const content = contents[Math.min(index++, contents.length - 1)]!
+    return {
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`))
+          controller.close()
+        },
+      }),
+    }
+  })
+  vi.stubGlobal('fetch', fetch)
+  return fetch
+}
+
 function seedDraft(id = 1, version = 1, content = prose, chapterNumber = 1, chapterTitle = '北塔') {
   getProjectDb()!.prepare('INSERT INTO blueprints(chapter_number,title) VALUES(?,?)').run(chapterNumber, chapterTitle)
   getProjectDb()!.prepare('INSERT INTO contents(id,body) VALUES(?,?)').run(id, content)
@@ -913,6 +933,279 @@ describe('first chapter character-state snapshot through real finalization and g
       restored.close()
     }
     expect(extraction.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('explicitly rebuilds from the first gap with frozen predecessors and idempotent run retries', async () => {
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedDraft(1, 1, '第一章林岚在北塔。', 1, '北塔')
+    seedDraft(2, 1, '第二章林岚抵达南桥。', 2, '南桥')
+    await finalize(1, '第一章林岚在北塔。', 1, 1, '北塔')
+    await finalize(2, '第二章林岚抵达南桥。', 1, 2, '南桥')
+    const fetch = stream(JSON.stringify({ updates: [] }))
+
+    const plan = await invoke<{
+      range: { startChapter: number; endChapter: number }
+      chapters: Array<{ source: { chapterNumber: number }; chapterTitle: string }>
+    }>('finalized-character:plan-state-rebuild', {})
+    expect(plan).toMatchObject({ range: { startChapter: 1, endChapter: 2 }, chapters: [
+      { source: { chapterNumber: 1 }, chapterTitle: '北塔' },
+      { source: { chapterNumber: 2 }, chapterTitle: '南桥' },
+    ] })
+    expect(fetch).not.toHaveBeenCalled()
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'invalid' })
+
+    const request = { rebuildId: '6b7f1ee6-596f-4b0b-a49b-e157c8d208aa', modelId: model.id, endChapter: 2 }
+    const rebuilt = await invoke<{
+      status: string
+      completedChapters: number
+      nextChapterNumber: number | null
+      chapters: Array<{ status: string; snapshotId?: string; inputHash?: string; predecessor?: { snapshotId: string } }>
+    }>('finalized-character:begin-state-rebuild', request)
+    expect(rebuilt).toMatchObject({ status: 'completed', completedChapters: 2, nextChapterNumber: null })
+    expect(rebuilt.chapters.map(chapter => chapter.status)).toEqual(['completed', 'completed'])
+    expect(fetch).toHaveBeenCalledTimes(2)
+
+    const snapshots = await listSnapshots('character-lin')
+    expect(snapshots).toHaveLength(2)
+    expect(snapshots.map(snapshot => snapshot.validity)).toEqual(['valid', 'valid'])
+    expect(rebuilt.chapters[0]).toMatchObject({ snapshotId: snapshots[0]!.snapshotId, inputHash: snapshots[0]!.inputHash })
+    expect(rebuilt.chapters[1]).toMatchObject({
+      snapshotId: snapshots[1]!.snapshotId,
+      inputHash: snapshots[1]!.inputHash,
+      predecessor: { snapshotId: snapshots[0]!.snapshotId },
+    })
+    expect(snapshots[1]!.baseline).toMatchObject({ predecessor: { snapshotId: snapshots[0]!.snapshotId } })
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'ready', snapshotId: snapshots[1]!.snapshotId })
+
+    await expect(invoke('finalized-character:begin-state-rebuild', request)).resolves.toEqual(rebuilt)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(await listSnapshots('character-lin')).toEqual(snapshots)
+  })
+
+  it('keeps committed rebuild chapters after a failure and resumes from the checkpoint', async () => {
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedDraft(1, 1, '第一章林岚在北塔。', 1, '北塔')
+    seedDraft(2, 1, '第二章林岚抵达南桥。', 2, '南桥')
+    await finalize(1, '第一章林岚在北塔。', 1, 1, '北塔')
+    await finalize(2, '第二章林岚抵达南桥。', 1, 2, '南桥')
+    const rebuildId = 'c5e59af2-c420-4b5f-bb67-e527c06c31d8'
+    const first = streamResponses([JSON.stringify({ updates: [] }), '不是 JSON'])
+    await expect(invoke('finalized-character:begin-state-rebuild', { rebuildId, modelId: model.id })).rejects.toThrow()
+    expect(first).toHaveBeenCalledTimes(2)
+
+    const [failed] = await invoke<Array<Record<string, unknown>>>('finalized-character:list-state-rebuilds')
+    expect(failed).toMatchObject({ rebuildId, status: 'failed', completedChapters: 1, nextChapterNumber: 2, canResume: true })
+    const committed = await listSnapshots('character-lin')
+    expect(committed).toHaveLength(1)
+    expect(committed[0]).toMatchObject({ source: { chapterNumber: 1 }, validity: 'valid' })
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'invalid' })
+
+    const retry = stream(JSON.stringify({ updates: [] }))
+    await expect(invoke('finalized-character:resume-state-rebuild', { rebuildId })).resolves.toMatchObject({
+      rebuildId, status: 'completed', completedChapters: 2, nextChapterNumber: null,
+    })
+    expect(retry).toHaveBeenCalledTimes(1)
+    const snapshots = await listSnapshots('character-lin')
+    expect(snapshots).toHaveLength(2)
+    expect(snapshots[0]).toEqual(committed[0])
+    expect(snapshots[1]!.baseline).toMatchObject({ predecessor: { snapshotId: committed[0]!.snapshotId } })
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'ready', snapshotId: snapshots[1]!.snapshotId })
+  })
+
+  it('appends a new rebuild run and re-extracts from its new predecessor instead of replaying old patches', async () => {
+    const firstProse = '第一章林岚在北塔。'
+    const secondProse = '第二章林岚抵达南桥。'
+    const revisedProse = '第一章新稿林岚抵达重建北塔。'
+    const update = (location: string, content: string) => JSON.stringify({ updates: [{
+      characterId: 'character-lin', currentState: { location },
+      evidence: { start: 0, end: content.length, text: content },
+    }] })
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedDraft(1, 1, firstProse, 1, '北塔')
+    seedDraft(2, 1, secondProse, 2, '南桥')
+    await finalize(1, firstProse, 1, 1, '北塔')
+    await finalize(2, secondProse, 1, 2, '南桥')
+    const firstFetch = streamResponses([update('旧北塔', firstProse), JSON.stringify({ updates: [] })])
+    await invoke('finalized-character:begin-state-rebuild', { rebuildId: '2c87d0cd-cf57-4508-a5b0-eb5f9d490aaa', modelId: model.id })
+    expect(firstFetch).toHaveBeenCalledTimes(2)
+    const before = await listSnapshots('character-lin')
+
+    getProjectDb()!.prepare('INSERT INTO contents(id,body) VALUES(3,?)').run(revisedProse)
+    getProjectDb()!.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id,word_count) VALUES(3,1,2,'draft',3,12)").run()
+    const revised = await finalize(3, revisedProse, 1, 1, '新北塔')
+    const secondFetch = streamResponses([update('重建北塔', revisedProse), JSON.stringify({ updates: [] })])
+    await expect(invoke('finalized-character:begin-state-rebuild', {
+      rebuildId: '14f2ea16-e33e-4a04-938f-1f21171d0a4b', modelId: model.id,
+    })).resolves.toMatchObject({ status: 'completed', completedChapters: 2 })
+    expect(secondFetch).toHaveBeenCalledTimes(2)
+    expect(String((secondFetch.mock.calls[1]![1] as { body: string }).body)).toContain('重建北塔')
+
+    const after = await listSnapshots('character-lin')
+    expect(after).toHaveLength(4)
+    const added = after.filter(snapshot => !before.some(old => old.snapshotId === snapshot.snapshotId))
+    expect(added).toHaveLength(2)
+    expect(added.map(snapshot => snapshot.validity)).toEqual(['valid', 'valid'])
+    expect(after.filter(snapshot => before.some(old => old.snapshotId === snapshot.snapshotId)).map(snapshot => snapshot.validity))
+      .toEqual(['superseded', 'superseded'])
+    expect(added[1]!.baseline).toMatchObject({ predecessor: { snapshotId: added[0]!.snapshotId } })
+    const detail = await readSnapshot(added[1]!.snapshotId as string, 'character-lin')
+    expect(detail.character).toMatchObject({ fields: expect.arrayContaining([
+      expect.objectContaining({ field: 'location', value: '重建北塔', knownAtChapter: 1,
+        provenance: expect.objectContaining({ kind: 'derived', source: expect.objectContaining({ finalizationId: revised.finalizationId }) }) }),
+    ]) })
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'ready', snapshotId: added[1]!.snapshotId })
+  })
+
+  it('does not move the current cache when only a historical rebuild range completes', async () => {
+    const chapters = ['第一章林岚在北塔。', '第二章林岚经过旧站。', '第三章林岚抵达南桥。']
+    const update = (location: string, content: string) => JSON.stringify({ updates: [{
+      characterId: 'character-lin', currentState: { location },
+      evidence: { start: 0, end: content.length, text: content },
+    }] })
+    seedCharacter('character-lin', '林岚', {}, {})
+    chapters.forEach((content, index) => seedDraft(index + 1, 1, content, index + 1, `第${index + 1}章`))
+    for (const [index, content] of chapters.entries()) await finalize(index + 1, content, 1, index + 1, `第${index + 1}章`)
+    const first = streamResponses(chapters.map((content, index) => update(['北塔', '旧站', '南桥'][index]!, content)))
+    await invoke('finalized-character:begin-state-rebuild', { rebuildId: '3f66f42f-2f0b-442b-b47c-e71916de2f0f', modelId: model.id })
+    expect(first).toHaveBeenCalledTimes(3)
+    const readCurrent = async () => await invoke<{
+      entries: Array<{ currentState?: { location: string } }>
+      currentDerivedFields: Record<string, string[]>
+    }>('db:character-roster-read', session.projectPath)
+    expect((await readCurrent()).entries[0]?.currentState?.location).toBe('南桥')
+
+    const revised = '第一章新稿林岚重建北塔。'
+    getProjectDb()!.prepare('INSERT INTO contents(id,body) VALUES(4,?)').run(revised)
+    getProjectDb()!.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id,word_count) VALUES(4,1,2,'draft',4,12)").run()
+    await finalize(4, revised, 1, 1, '新北塔')
+    const historical = streamResponses([update('重建北塔', revised), update('重建旧站', chapters[1]!)])
+    await expect(invoke('finalized-character:begin-state-rebuild', {
+      rebuildId: 'e42f42bc-f8a8-4b14-b64e-12f2d012296b', modelId: model.id, endChapter: 2,
+    })).resolves.toMatchObject({ status: 'completed', completedChapters: 2, range: { startChapter: 1, endChapter: 2 } })
+    expect(historical).toHaveBeenCalledTimes(2)
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'invalid', reason: 'continuity-incomplete' })
+    expect((await readCurrent()).entries[0]?.currentState?.location).toBe('南桥')
+    expect((await readCurrent()).currentDerivedFields['character-lin'] ?? []).toEqual([])
+
+    const latest = stream(update('重建南桥', chapters[2]!))
+    await invoke('finalized-character:begin-state-rebuild', { rebuildId: '1f4f2f0f-84cf-493b-a0f5-153f5073d1c4', modelId: model.id })
+    expect(latest).toHaveBeenCalledTimes(1)
+    expect((await readCurrent()).entries[0]?.currentState?.location).toBe('重建南桥')
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'ready' })
+  })
+
+  it('cancels an in-flight rebuild without rolling back or starting the next chapter', async () => {
+    seedCharacter('character-lin', '林岚', {}, {})
+    for (const chapterNumber of [1, 2, 3]) {
+      const content = `第${chapterNumber}章正文。`
+      seedDraft(chapterNumber, 1, content, chapterNumber, `第${chapterNumber}章`)
+      await finalize(chapterNumber, content, 1, chapterNumber, `第${chapterNumber}章`)
+    }
+    const rebuildId = '73a3d526-e4a3-4a53-9e3f-cf47c1165e3f'
+    let calls = 0
+    let secondStarted!: () => void
+    const second = new Promise<void>(resolve => { secondStarted = resolve })
+    const fetch = vi.fn(async (url: unknown, init?: { body?: string; signal?: AbortSignal }) => {
+      void url
+      void init
+      calls++
+      if (calls === 2) {
+        secondStarted()
+        return await new Promise<never>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('已取消', 'AbortError')), { once: true })
+        })
+      }
+      const content = JSON.stringify({ updates: [] })
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`))
+            controller.close()
+          },
+        }),
+      }
+    })
+    vi.stubGlobal('fetch', fetch)
+    const pending = invoke<Record<string, unknown>>('finalized-character:begin-state-rebuild', { rebuildId, modelId: model.id })
+    await second
+    await expect(invoke('finalized-character:cancel-state-rebuild', { rebuildId })).resolves.toMatchObject({
+      rebuildId, status: 'cancelled', completedChapters: 1, nextChapterNumber: 2, canResume: false,
+    })
+    await expect(pending).resolves.toMatchObject({ rebuildId, status: 'cancelled', completedChapters: 1, nextChapterNumber: 2 })
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(await listSnapshots('character-lin')).toHaveLength(1)
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'invalid' })
+
+    const retry = stream(JSON.stringify({ updates: [] }))
+    await expect(invoke('finalized-character:resume-state-rebuild', { rebuildId })).resolves.toMatchObject({ status: 'cancelled' })
+    expect(retry).not.toHaveBeenCalled()
+    expect(await listSnapshots('character-lin')).toHaveLength(1)
+  })
+
+  it('reopens a failed rebuild without automatic dispatch and resumes with the new project session', async () => {
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedDraft(1, 1, '第一章林岚在北塔。', 1, '北塔')
+    seedDraft(2, 1, '第二章林岚抵达南桥。', 2, '南桥')
+    await finalize(1, '第一章林岚在北塔。', 1, 1, '北塔')
+    await finalize(2, '第二章林岚抵达南桥。', 1, 2, '南桥')
+    const rebuildId = '31f2aa8b-8c8f-4a17-a3f0-fbe3dc0db0f7'
+    const first = streamResponses([JSON.stringify({ updates: [] }), '无效提取'])
+    await expect(invoke('finalized-character:begin-state-rebuild', { rebuildId, modelId: model.id })).rejects.toThrow()
+    expect(first).toHaveBeenCalledTimes(2)
+
+    closeProjectDatabase()
+    projectAccess.invalidateCurrentSession()
+    const reopened = projectAccess.probeExistingProject(session.projectPath)
+    if (reopened.kind !== 'manifest') throw new Error('Expected a manifest project')
+    initProjectDatabase(reopened.rootPath)
+    session = { ...session, leaseId: projectAccess.beginSession(reopened).leaseId }
+    const retry = stream(JSON.stringify({ updates: [] }))
+    await expect(invoke('finalized-character:list-state-rebuilds')).resolves.toEqual([
+      expect.objectContaining({ rebuildId, status: 'failed', completedChapters: 1, nextChapterNumber: 2, canResume: true }),
+    ])
+    expect(retry).not.toHaveBeenCalled()
+
+    await expect(invoke('finalized-character:resume-state-rebuild', { rebuildId })).resolves.toMatchObject({
+      rebuildId, status: 'completed', completedChapters: 2, nextChapterNumber: null,
+    })
+    expect(retry).toHaveBeenCalledTimes(1)
+    expect(await listSnapshots('character-lin')).toHaveLength(2)
+    await expect(mocks.handlers.get('finalized-character:resume-state-rebuild')!({ sender }, { rebuildId }, {
+      ...session, leaseId: 'stale-lease',
+    })).rejects.toThrow('GENERATION_PROJECT_SESSION_STALE')
+  })
+
+  it('offers the latest chapter for an explicit rebuild when only the cache needs repair', async () => {
+    seedDraft()
+    seedCharacter('character-lin', '林岚', {}, {})
+    getProjectDb()!.transaction(() => refreshCharacterIdentityProjection(getProjectDb()!))()
+    await finalize()
+    const extraction = await extractedCommit(1, [])
+    const roster = await invoke<{ revision: number; identityRevision: number; schemaVersion: 1; entries: Array<Record<string, unknown>> }>(
+      'db:character-roster-read', session.projectPath,
+    )
+    const entry = roster.entries.find(item => item.characterId === 'character-lin')!
+    await invoke('db:character-roster-commit', {
+      operationId: 'author-before-cache-rebuild', expectedRevision: roster.revision, expectedIdentityRevision: roster.identityRevision,
+      schemaVersion: roster.schemaVersion, intent: 'manual_edit',
+      entries: [{ ...entry, currentState: { location: '作者保留地点', powerLevel: '', physicalState: '', mentalState: '', keyItems: '', recentEvents: '', updatedAtChapter: 1 } }],
+    }, session.projectPath)
+    await expect(invoke('finalization-generation:commit', extraction.request)).resolves.toMatchObject({ cacheStatus: 'rebuild-required', cacheConflict: true })
+    await expect(invoke('finalized-character:read-state-continuity')).resolves.toEqual([
+      expect.objectContaining({ status: 'valid', source: expect.objectContaining({ chapterNumber: 1 }) }),
+    ])
+    await expect(invoke('finalized-character:plan-state-rebuild', {})).resolves.toMatchObject({ range: { startChapter: 1, endChapter: 1 } })
+
+    const rebuild = stream(JSON.stringify({ updates: [] }))
+    await expect(invoke('finalized-character:begin-state-rebuild', {
+      rebuildId: '3dd4f879-356f-44c3-a580-e9ae14a7ef0c', modelId: model.id,
+    })).resolves.toMatchObject({ status: 'completed', completedChapters: 1 })
+    expect(rebuild).toHaveBeenCalledTimes(1)
+    expect(await listSnapshots('character-lin')).toHaveLength(2)
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'ready' })
+    const current = await invoke<{ entries: Array<{ currentState?: { location: string } }> }>('db:character-roster-read', session.projectPath)
+    expect(current.entries[0]?.currentState?.location).toBe('作者保留地点')
   })
 
   it('keeps known snapshots and identity proposals when other occurrences are unknown or ambiguous', async () => {

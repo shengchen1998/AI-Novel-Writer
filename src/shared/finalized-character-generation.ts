@@ -51,4 +51,24 @@ export interface FinalizedCharacterGenerationChannels {
     args: []
     return: import('./chapter-character-state-snapshot').ChapterCharacterStateCacheStatus
   }
+  'finalized-character:plan-state-rebuild': {
+    args: [{ endChapter?: number }]
+    return: import('./chapter-character-state-rebuild').ChapterCharacterStateRebuildPlan | null
+  }
+  'finalized-character:list-state-rebuilds': {
+    args: []
+    return: import('./chapter-character-state-rebuild').ChapterCharacterStateRebuildStatus[]
+  }
+  'finalized-character:begin-state-rebuild': {
+    args: [{ rebuildId: string; modelId: string; endChapter?: number }]
+    return: import('./chapter-character-state-rebuild').ChapterCharacterStateRebuildStatus
+  }
+  'finalized-character:resume-state-rebuild': {
+    args: [{ rebuildId: string }]
+    return: import('./chapter-character-state-rebuild').ChapterCharacterStateRebuildStatus
+  }
+  'finalized-character:cancel-state-rebuild': {
+    args: [{ rebuildId: string }]
+    return: import('./chapter-character-state-rebuild').ChapterCharacterStateRebuildStatus
+  }
 }

@@ -27,6 +27,8 @@ import type { EditorInlineInput } from '../../src/shared/editor-inline-generatio
 import { buildEditorInlineContext, validateEditorInlineInput, editorInlineTask } from './editor-inline-generation';
 import type { FinalizationGenerationContext, FinalizationGenerationSlot } from '../../src/shared/finalization-generation';
 import { captureFinalizationGenerationContext, finalizationSlotKey, finalizationGenerationTask } from './finalization-generation-source';
+import type { ChapterCharacterStateRebuildManifest, ChapterCharacterStateRebuildPlan } from '../../src/shared/chapter-character-state-rebuild';
+import { CHAPTER_CHARACTER_STATE_REBUILD_OPERATION } from '../../src/shared/chapter-character-state-rebuild';
 import type { GraphGenerationContext, GraphGenerationInput } from '../../src/shared/graph-generation';
 import { captureGraphGenerationContext, graphGenerationTask, validateGraphGenerationInput } from './graph-generation-source';
 import { provenGraphOwnEventIds } from './graph-generation';
@@ -65,6 +67,7 @@ export interface GenerationSourceBindingInput {
     editorInlineOriginEpoch?: string;
     finalizationGenerationSlot?: FinalizationGenerationSlot;
     finalizationGenerationContext?: FinalizationGenerationContext;
+    characterStateRebuild?: { rebuildId: string; plan: ChapterCharacterStateRebuildPlan; extraction?: FinalizationGenerationContext };
     graphGenerationInput?: GraphGenerationInput;
     graphGenerationKey?: string;
     graphGenerationContext?: GraphGenerationContext;
@@ -499,7 +502,7 @@ export function buildGenerationSourceBinding(deps: GenerationSourceBindingDepend
         if (selected)
             assets.push({ scope, identity: `prompt:${key}:${facts.language}`, hash: hash(selected) });
         if (agentInput && key === 'assistant_writing_identity') agentPrompt = { selected: selected?.toString('utf8') ?? builtin, builtin };
-        if (input.importSlot || editorInlineInput || input.finalizationGenerationSlot) importPrompts[key] = JSON.parse(selected?.toString('utf8') ?? builtin);
+        if (input.importSlot || editorInlineInput || input.finalizationGenerationSlot || input.characterStateRebuild) importPrompts[key] = JSON.parse(selected?.toString('utf8') ?? builtin);
     }
     const bindingsBytes = observe(deps.projectStorageRoot, 'writing-skills.json', true);
     const bindings = bindingsBytes ? JSON.parse(bindingsBytes.toString('utf8')) : { version: 1, bindings: {} };
@@ -558,9 +561,18 @@ export function buildGenerationSourceBinding(deps: GenerationSourceBindingDepend
     }
     const agentContext = agentInput && agentPrompt ? buildAgentGenerationContext(agentInput, facts.core, facts.language, agentPrompt.selected, agentPrompt.builtin) : undefined;
     const editorInlineContext = editorInlineInput ? buildEditorInlineContext(editorInlineInput, facts.language, importPrompts.edit_selected_text!) : undefined;
-    const finalizationContext = input.finalizationGenerationSlot ? captureFinalizationGenerationContext(deps.db, input.finalizationGenerationSlot, input, facts.language,
-        importPrompts[input.finalizationGenerationSlot.stepKey === 'chapter_notes' ? 'generate_chapter_notes' : 'update_character_cards']!, input.finalizationGenerationContext) : undefined;
+    const rebuildChapter = input.characterStateRebuild?.plan.chapters.find(chapter => chapter.source.chapterNumber === input.chapterNumber);
+    if (input.characterStateRebuild && (input.operation !== CHAPTER_CHARACTER_STATE_REBUILD_OPERATION || !rebuildChapter
+        || input.selectedDraftIds.length || input.selectedFinalizedDraftIds.length !== 1
+        || input.selectedFinalizedDraftIds[0] !== rebuildChapter.source.draftId)) fail('GENERATION_CHARACTER_STATE_REBUILD_SELECTION_INVALID');
+    const finalizationSlot = input.finalizationGenerationSlot ?? (rebuildChapter ? { source: rebuildChapter.source, stepKey: 'character_cards' as const } : undefined);
+    const finalizationContext = finalizationSlot ? captureFinalizationGenerationContext(deps.db, finalizationSlot, input, facts.language,
+        importPrompts[finalizationSlot.stepKey === 'chapter_notes' ? 'generate_chapter_notes' : 'update_character_cards']!,
+        input.characterStateRebuild?.extraction ?? input.finalizationGenerationContext) : undefined;
+    const rebuildContext: ChapterCharacterStateRebuildManifest | undefined = input.characterStateRebuild && finalizationContext
+        ? { version: 1, rebuildId: input.characterStateRebuild.rebuildId, plan: structuredClone(input.characterStateRebuild.plan), extraction: finalizationContext } : undefined;
     if (finalizationContext) add('finalization-generation-context', 0, JSON.stringify(finalizationContext), 'finalized-fact', 'main captured finalization identity, original field baselines and selected prompt');
+    if (rebuildContext) add('chapter-character-state-rebuild', 0, JSON.stringify(rebuildContext), 'finalized-fact', 'main captured explicit rebuild run, ordered finalization sources and current predecessor baseline');
     if (editorInlineContext) add('editor-inline:author-draft', 0, JSON.stringify(editorInlineContext), 'author-constraint', 'explicit unsaved author manuscript and UTF16 selection; not a canonical document');
     const importContext = input.importSlot ? captureImportGenerationContext(deps.db, input.importSlot) : undefined;
     if (importContext) importContext.prompts = importPrompts;
@@ -584,11 +596,16 @@ export function buildGenerationSourceBinding(deps: GenerationSourceBindingDepend
             graphGenerationContext: graphContext, graphGenerationContextHash: hash(JSON.stringify(graphContext)), graphGenerationOriginEpoch: graphContext.originEpoch,
             graphGenerationTask: task, graphGenerationTaskHash: hash(JSON.stringify(task)) });
     }
-    if (finalizationContext) {
+    if (finalizationContext && !rebuildContext) {
         const task = finalizationGenerationTask(finalizationContext, transferAuthority?.originProjectId);
         Object.assign(sourceManifest, { finalizationGenerationSlot: finalizationContext.slot, finalizationGenerationSlotKey: finalizationSlotKey(finalizationContext.slot),
             finalizationGenerationContext: finalizationContext, finalizationGenerationContextHash: hash(JSON.stringify(finalizationContext)), finalizationGenerationOriginEpoch: finalizationContext.identity.epoch,
             finalizationGenerationTask: task, finalizationGenerationTaskHash: hash(JSON.stringify(task)) });
+    }
+    if (rebuildContext) {
+        const task = finalizationGenerationTask(rebuildContext.extraction, transferAuthority?.originProjectId);
+        Object.assign(sourceManifest, { characterStateRebuild: rebuildContext, characterStateRebuildHash: hash(JSON.stringify(rebuildContext)),
+            characterStateRebuildTask: task, characterStateRebuildTaskHash: hash(JSON.stringify(task)) });
     }
     if (agentContext) Object.assign(sourceManifest, { agentInput, agentContext, agentContextHash: hash(JSON.stringify(agentContext)), ...(input.agentSession ? { agentSession: structuredClone(input.agentSession) } : {}) });
     if (input.agentWorkflowRegistrationId) Object.assign(sourceManifest, { agentWorkflowRegistrationId: input.agentWorkflowRegistrationId });

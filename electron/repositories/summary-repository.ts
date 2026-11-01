@@ -424,7 +424,7 @@ export class SummaryRepository {
   }
 
   static commitFinalizedCharacterStates(context: FinalizedCharacterContext, response: FinalizedCharacterStateResponse, database = getProjectDb(),
-    originProjectId?: string, stateBaseline?: ChapterCharacterStateSnapshotBaseline): FinalizedCharacterStateCommitReceipt {
+    originProjectId?: string, stateBaseline?: ChapterCharacterStateSnapshotBaseline, snapshotOperationId?: string): FinalizedCharacterStateCommitReceipt {
     if (!database) throw new Error('PROJECT_NOT_OPEN')
     const db = database
     const prepared = db.transaction(() => {
@@ -437,7 +437,7 @@ export class SummaryRepository {
       const verified = parseFinalizedCharacterStateResponse(JSON.stringify({ updates: response.updates }), context)
       if (verified.unresolved.length) throw new Error('FINALIZED_CHARACTER_IDENTITY_REQUIRED')
       const baseline = stateBaseline ?? ChapterCharacterStateSnapshotRepository.captureBaseline(context, db) ?? undefined
-      const snapshotId = ChapterCharacterStateSnapshotRepository.appendInitial(context, verified.updates, db, response.unresolved, baseline)
+      const snapshotId = ChapterCharacterStateSnapshotRepository.appendInitial(context, verified.updates, db, response.unresolved, baseline, snapshotOperationId)
       const receipt: FinalizedCharacterStateCommitReceipt = { applied: 0, unchanged: 0, candidates: [] }
       for (const update of verified.updates) {
         const captured = context.characters.find(item => item.characterId === update.characterId)!
