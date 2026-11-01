@@ -306,7 +306,7 @@ describe('书房', () => {
     expect(useLayoutStore.getState().sidebarView).not.toBe('home')
   })
 
-  it('几章都在写时「继续写作」指向最后一章在写的；只有空稿的章不算开始', async () => {
+  it('空稿不抢有正文章的落点；只有空稿时正文阶段仍已开始', async () => {
     openCurrent()
     useProjectStore.setState({ recentProjects: [LIGHTHOUSE] })
     await mount()
@@ -326,6 +326,6 @@ describe('书房', () => {
       useStageStore.setState({ work: { session, architecture, blueprints: [] } })
       useDraftStore.setState({ draftsByChapter: { 1: draft(1, 0) } as never })
     })
-    expect(primary()).toEqual(['继续写作 · 架构'])
+    expect(primary()).toEqual(['继续写作 · 第 1 章 · 待审稿'])
   })
 })

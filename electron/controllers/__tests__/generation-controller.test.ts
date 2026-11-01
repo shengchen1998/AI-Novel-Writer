@@ -110,6 +110,75 @@ describe('generation public IPC with actual project authority and SQLite', () =>
     })
   })
 
+  it('rejects an author first draft over an existing working draft without changing SQLite rows', async () => {
+    vi.stubGlobal('window', { aiNovelAPI: { invoke: (channel: string, ...args: unknown[]) => mocks.handlers.get(channel)!({ sender }, ...args) } })
+    const existing = await ipc.invokeWithProjectSession(session, 'db:draft-create', {
+      chapterNumber: 1, version: 1, source: 'write', content: '另一窗口已经写入的正文。', wordCount: 12,
+    }, session.projectPath)
+    expect(existing.success).toBe(true)
+    const before = {
+      drafts: getProjectDb()!.prepare('SELECT * FROM drafts ORDER BY id').all(),
+      contents: getProjectDb()!.prepare('SELECT * FROM contents ORDER BY id').all(),
+    }
+
+    const created = await ipc.invokeWithProjectSession(session, 'db:draft-create', {
+      chapterNumber: 1, version: 1, source: 'author', content: '', wordCount: 0, sourceDependencies: [], onlyWhenChapterEmpty: true,
+    }, session.projectPath)
+
+    expect(created).toEqual({ success: false, error: 'Error: DRAFT_AUTHOR_CREATE_CONFLICT' })
+    expect({
+      drafts: getProjectDb()!.prepare('SELECT * FROM drafts ORDER BY id').all(),
+      contents: getProjectDb()!.prepare('SELECT * FROM contents ORDER BY id').all(),
+    }).toEqual(before)
+  })
+
+  it('rejects an author first draft over a finalized chapter without changing SQLite rows', async () => {
+    vi.stubGlobal('window', { aiNovelAPI: { invoke: (channel: string, ...args: unknown[]) => mocks.handlers.get(channel)!({ sender }, ...args) } })
+    const content = '另一窗口已经定稿的正文。'
+    const existing = await ipc.invokeWithProjectSession(session, 'db:draft-create', {
+      chapterNumber: 1, version: 1, source: 'write', content, wordCount: 12,
+    }, session.projectPath)
+    FinalizationRepository.commit({
+      finalizationId: 'author-create-conflict', draftId: existing.id!, chapterNumber: 1, chapterTitle: '第一章',
+      content, contentHash: textHash(content), contentRevision: 1, targetFileName: 'chapter-1.md',
+    })
+    const before = {
+      drafts: getProjectDb()!.prepare('SELECT * FROM drafts ORDER BY id').all(),
+      contents: getProjectDb()!.prepare('SELECT * FROM contents ORDER BY id').all(),
+    }
+
+    const created = await ipc.invokeWithProjectSession(session, 'db:draft-create', {
+      chapterNumber: 1, version: 1, source: 'author', content: '', wordCount: 0, sourceDependencies: [], onlyWhenChapterEmpty: true,
+    }, session.projectPath)
+
+    expect(created).toEqual({ success: false, error: 'Error: DRAFT_AUTHOR_CREATE_CONFLICT' })
+    expect({
+      drafts: getProjectDb()!.prepare('SELECT * FROM drafts ORDER BY id').all(),
+      contents: getProjectDb()!.prepare('SELECT * FROM contents ORDER BY id').all(),
+    }).toEqual(before)
+  })
+
+  it.each(['running', 'paused'])('rejects an author first draft while another window has a %s chapter generation without a draft', async status => {
+    vi.stubGlobal('window', { aiNovelAPI: { invoke: (channel: string, ...args: unknown[]) => mocks.handlers.get(channel)!({ sender }, ...args) } })
+    getProjectDb()!.prepare('INSERT INTO generation_roots(root_action_id,idempotency_key,action_json,budget_json) VALUES(?,?,?,?)')
+      .run('root-author-race', 'root-author-race', '{}', '{}')
+    getProjectDb()!.prepare('INSERT INTO generation_runs(run_id,root_action_id,binding_json,status,created_at_ms,open_key) VALUES(?,?,?,?,?,?)')
+      .run('run-author-race', 'root-author-race', JSON.stringify({ sourceManifest: { operation: 'chapter-draft', chapterNumber: 1 } }), status, 1, 'run-author-race')
+    const request = {
+      chapterNumber: 1, version: 1, source: 'author' as const, content: '', wordCount: 0, sourceDependencies: [], onlyWhenChapterEmpty: true,
+    }
+
+    const created = await ipc.invokeWithProjectSession(session, 'db:draft-create', request, session.projectPath)
+    expect(created).toEqual({ success: false, error: 'Error: DRAFT_AUTHOR_CREATE_CONFLICT' })
+    expect(getProjectDb()!.prepare('SELECT COUNT(*) FROM drafts').pluck().get()).toBe(0)
+    expect(getProjectDb()!.prepare('SELECT COUNT(*) FROM contents').pluck().get()).toBe(0)
+
+    getProjectDb()!.prepare("UPDATE generation_runs SET status='cancelled' WHERE run_id='run-author-race'").run()
+    const afterCancellation = await ipc.invokeWithProjectSession(session, 'db:draft-create', request, session.projectPath)
+    expect(afterCancellation).toMatchObject({ success: true })
+    expect(getProjectDb()!.prepare('SELECT COUNT(*) FROM drafts').pluck().get()).toBe(1)
+  })
+
   it.each(['review-chapter', 'refine-draft', 'refine-from-review'] as const)('routes %s through the renderer client, registered IPC, owner and actual formal repository', async operation => {
     const body = '林岚到达海港，发现了留下的信。'
     const revisedBody = '林岚到达海港，发现了父亲留下的信。'
