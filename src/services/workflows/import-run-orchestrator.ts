@@ -105,11 +105,6 @@ export interface ImportRunOrchestratorDependencies {
     draft: FinalizedDraftImportDraftReceipt,
     run: ImportRunSnapshot,
   ) => Promise<void>
-  postprocessAuthorChapter?: (
-    chapter: ImportRunChapterSnapshot,
-    draft: FinalizedDraftImportDraftReceipt,
-    run: ImportRunSnapshot,
-  ) => Promise<void>
   /** 作者原稿蓝图补空：当前已有蓝图的章号。 */
   listBlueprintChapterNumbers?: () => Promise<ReadonlySet<number>>
   isAuthorDraftReplaced: (draft: FinalizedDraftImportDraftReceipt) => Promise<boolean>
@@ -634,7 +629,7 @@ export class ImportRunOrchestrator {
     )
     const projectChapter = stage === 'author-publish'
       ? requiredAuthorDependency(this.dependencies.publishAuthorChapter, 'publishAuthorChapter')
-      : requiredAuthorDependency(this.dependencies.postprocessAuthorChapter, 'postprocessAuthorChapter')
+      : undefined
     const receipt = await getReceipt(run.id)
     if (!receipt) {
       throw importRecordError(
@@ -667,7 +662,7 @@ export class ImportRunOrchestrator {
               `第 ${chapter.number} 章已重新定稿，跳过导入稿`,
               `Chapter ${chapter.number} was refinalized; skipping the imported draft`,
             ))
-          } else {
+          } else if (projectChapter) {
             await this.withLeaseHeartbeat(
               run,
               execution,

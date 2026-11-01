@@ -17,6 +17,7 @@ import {
 } from '../../src/shared/draft-units'
 import { resolveManuscriptTarget } from '../services/manuscript-publisher'
 import { isReceiptedDraftStatus } from '../../src/shared/draft-status'
+import { freezeFinalizedCharacterSnapshot } from './summary-repository'
 
 interface ImportOperationRow {
   operation_id: string
@@ -477,6 +478,12 @@ export class FinalizedDraftImportRepository {
           chapter.content,
           target.fileName,
         )
+        freezeFinalizedCharacterSnapshot(db, {
+          draftId,
+          finalizationId: frozenFinalizationId,
+          chapterNumber: chapter.chapterNumber,
+          contentHash: frozenContentHash,
+        })
         drafts.push({
           chapterNumber: chapter.chapterNumber,
           draftId,

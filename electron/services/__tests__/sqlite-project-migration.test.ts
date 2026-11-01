@@ -10,6 +10,7 @@ import { sqliteSchemaFingerprint } from '../../migrations/sqlite-schema-adapter'
 import { backupProjectSqlite, probeProjectSqlite, verifyProjectSqlite, upgradeProjectSqlite } from '../sqlite-project-migration'
 import { CharacterRosterRepository } from '../../repositories/character-roster-repository'
 import { ProjectCoreRepository } from '../../repositories/project-core-repository'
+import { ChapterCharacterStateSnapshotRepository } from '../../repositories/chapter-character-state-snapshot-repository'
 
 const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3')
 const roots: string[] = [], handles: BetterSqlite3.Database[] = []
@@ -421,6 +422,48 @@ it('upgrades a qualified schema 6 file to schema 10 without changing author cont
  try { expect(db.prepare('SELECT status,reason FROM chapter_character_state_cache_meta').get()).toEqual({status:'invalid',reason:'not-established'}) } finally { db.close() }
  expect(verifyProjectSqlite({databasePath:f.target})).toEqual(upgraded)
 })
+it('upgrades legacy finalized facts without backfilling snapshots or parsing legacy state text', async () => {
+  const f = fixture()
+  await backupProjectSqlite({ sourceDatabasePath: f.source, targetDatabasePath: f.target, targetVersion: 6 })
+  const db = new Database(f.target)
+  handles.push(db)
+  const body = db.prepare('SELECT body FROM contents WHERE id=1').pluck().get() as string
+  db.prepare("UPDATE drafts SET status='finalized' WHERE id=1").run()
+  db.prepare(`INSERT INTO finalization_outbox(
+    finalization_id,draft_id,chapter_number,chapter_title,content_hash,content_revision,content_snapshot,target_file_name,publication_status
+  ) VALUES('legacy-final',1,1,'旧定稿',?,1,?,'chapter-1.txt','published')`)
+    .run(createHash('sha256').update(body).digest('hex'), body)
+  db.prepare("INSERT INTO characters(character_id,name,cs_location) VALUES('legacy-character','旧角色','保留的当前缓存')").run()
+  db.prepare(`INSERT INTO summary_snapshots(draft_id,chapter_number,character_states,character_state_candidates)
+    VALUES(1,1,'{"旧角色":"不要猜测解析"}','[{"legacy":"preserve"}]')`).run()
+  db.prepare(`INSERT INTO recovery_candidates(
+    candidate_id,run_id,step_id,project_id,chapter_number,source_snapshot,source_hash,visible_text,content_hash
+  ) VALUES('legacy-candidate','old-run','draft','legacy-project',1,'旧来源','old-hash','旧候选','old-content')`).run()
+  const tables = ['characters', 'drafts', 'finalization_outbox', 'summary_snapshots', 'recovery_candidates']
+  const before = Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT rowid,* FROM ${table} ORDER BY rowid`).all()]))
+  db.close()
+  const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Migration must not invoke a model'))
+
+  try {
+    const upgraded = upgradeProjectSqlite({ databasePath: f.target })
+    expect(upgraded.schemaVersion).toBe(10)
+    const target = new Database(f.target, { readonly: true, fileMustExist: true })
+    handles.push(target)
+    for (const table of tables) expect(target.prepare(`SELECT rowid,* FROM ${table} ORDER BY rowid`).all(), table).toEqual(before[table])
+    expect(target.prepare('SELECT COUNT(*) FROM chapter_character_state_snapshots').pluck().get()).toBe(0)
+    expect(target.prepare("SELECT COUNT(*) FROM character_identity_proposals WHERE proposal_id='fcs:legacy-final'").pluck().get()).toBe(0)
+    expect(target.prepare('SELECT status,reason FROM chapter_character_state_cache_meta').get())
+      .toEqual({ status: 'invalid', reason: 'not-established' })
+    expect(ChapterCharacterStateSnapshotRepository.readContinuity(target)).toMatchObject([{
+      source: { finalizationId: 'legacy-final', chapterNumber: 1 }, status: 'missing-snapshot',
+    }])
+    expect(fetch).not.toHaveBeenCalled()
+    expect(verifyProjectSqlite({ databasePath: f.target })).toEqual(upgraded)
+  } finally {
+    fetch.mockRestore()
+  }
+})
+
 it('resolves a trusted system scratch junction before validating its private snapshot', () => {
  const f=fixture(), physical=path.join(f.root,'scratch'), link=path.join(f.root,'scratch-link')
  fs.mkdirSync(physical);fs.symlinkSync(physical,link,'junction')

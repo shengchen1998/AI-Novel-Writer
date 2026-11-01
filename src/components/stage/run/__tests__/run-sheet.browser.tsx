@@ -160,6 +160,36 @@ describe('运行侧页', () => {
     expect(host!.textContent).toContain('Cache rebuild required')
   })
 
+  it.each(['旧项目', '原稿导入'])('%s的缺失快照进入前驱链，并且只在确认后重建', async scenario => {
+    const source = (chapterNumber: number) => ({ draftId: chapterNumber,
+      finalizationId: `${scenario === '旧项目' ? 'legacy' : 'imported'}-final-${chapterNumber}`,
+      chapterNumber, contentHash: 'a'.repeat(64) })
+    const chapters = [1, 2].map(chapterNumber => ({ source: source(chapterNumber), chapterTitle: `第${chapterNumber}章` }))
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'finalized-character:read-state-continuity') return [
+        { ...chapters[0], status: 'missing-snapshot' },
+        { ...chapters[1], status: 'waiting-predecessor', predecessorGapChapterNumber: 1 },
+      ]
+      if (channel === 'finalized-character:plan-state-rebuild') return {
+        range: { startChapter: 1, endChapter: 2 }, chapters,
+      }
+      return base(channel, ...args)
+    })
+    useLLMStore.setState({ models: [{ id: 'm1', name: '夹具模型', modelName: 'fixture', purposes: ['generation'] }], defaultModelId: 'm1' } as never)
+    await render()
+
+    await vi.waitFor(() => expect(button('重建章节状态…')).toBeTruthy())
+    expect(host!.textContent).toContain('第 1 章缺少角色状态快照')
+    expect(host!.textContent).toContain('第 2 章等待前驱：第 1 章缺少有效快照')
+    expect(invoke.mock.calls.some(([channel]) => channel === 'finalized-character:begin-state-rebuild')).toBe(false)
+
+    await click('重建章节状态…')
+    expect(host!.textContent).toContain('重建范围：第 1 至 2 章')
+    expect(button('确认重建并调用模型')).toBeTruthy()
+    expect(invoke.mock.calls.some(([channel]) => channel === 'finalized-character:begin-state-rebuild')).toBe(false)
+  })
+
   it('重建前确认范围、章节和模型，确认后才发起重建', async () => {
     const source = (chapterNumber: number) => ({ draftId: chapterNumber, finalizationId: `final-${chapterNumber}`,
       chapterNumber, contentHash: 'a'.repeat(64) })

@@ -92,7 +92,6 @@ function completeBlueprintCharacterSync(receipt: BlueprintRangeCommitReceipt): v
 
 interface Trace {
   published: number[]
-  postprocessed: number[]
   globalCalls: number
   styleCalls: number
   blueprintCalls: number[][]
@@ -101,7 +100,7 @@ interface Trace {
 }
 
 function newTrace(): Trace {
-  return { published: [], postprocessed: [], globalCalls: 0, styleCalls: 0, blueprintCalls: [], failSecondBlueprintBatchOnce: false }
+  return { published: [], globalCalls: 0, styleCalls: 0, blueprintCalls: [], failSecondBlueprintBatchOnce: false }
 }
 
 function dependencies(trace: Trace): ImportRunOrchestratorDependencies {
@@ -160,7 +159,6 @@ function dependencies(trace: Trace): ImportRunOrchestratorDependencies {
       ImportRunRepository.getEffectReceipt(runId, 'author-commit', 'done')?.effectReceipt as FinalizedDraftImportReceipt | undefined
     ) ?? null,
     publishAuthorChapter: async item => { trace.published.push(item.number) },
-    postprocessAuthorChapter: async item => { trace.postprocessed.push(item.number) },
     isAuthorDraftReplaced: async () => false,
     refresh: async () => undefined,
     completeBatch: async (runId, stage, batchId, execution) => (
@@ -225,7 +223,7 @@ describe('勾选反推的作者原稿走完八个阶段', () => {
     await runRemainingStages(trace, 'renderer-after-cancel')
 
     expect(ImportRunRepository.get(RUN_ID)).toMatchObject({ status: 'completed', stage: 'completed', authorInference: true })
-    expect(trace).toMatchObject({ published: [1, 2, 3], postprocessed: [1, 2, 3], globalCalls: 1, styleCalls: 1, blueprintCalls: [[1, 2, 3]] })
+    expect(trace).toMatchObject({ published: [1, 2, 3], globalCalls: 1, styleCalls: 1, blueprintCalls: [[1, 2, 3]] })
     expect(ProjectCoreRepository.get()).toMatchObject({
       genre: '悬疑', coreOutline: '侦探追查旧案', premise: '旧案重启', worldbuilding: '租界与华界', synopsis: '三章查清真相',
       writingStyle: '短句，白描',
@@ -303,7 +301,7 @@ describe('不勾选反推的作者原稿', () => {
     await runRemainingStages(trace, 'renderer')
 
     expect(ImportRunRepository.get(RUN_ID)).toMatchObject({ status: 'completed', authorInference: false })
-    expect(trace).toMatchObject({ published: [1, 2, 3], postprocessed: [1, 2, 3], globalCalls: 0, styleCalls: 0, blueprintCalls: [] })
+    expect(trace).toMatchObject({ published: [1, 2, 3], globalCalls: 0, styleCalls: 0, blueprintCalls: [] })
     expect(ProjectCoreRepository.get()).toEqual(before)
     expect(BlueprintRepository.count()).toBe(0)
   })

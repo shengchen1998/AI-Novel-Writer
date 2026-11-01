@@ -400,7 +400,7 @@ export function buildGenerationSourceBinding(deps: GenerationSourceBindingDepend
         let brief: Record<string, unknown> | null = null;
         if (input.chapterNumber !== undefined) {
             const row = deps.db.prepare('SELECT * FROM blueprints WHERE chapter_number=?').get(input.chapterNumber) as Record<string, unknown> | undefined;
-            if (!row && !input.reviewRevisionContext && !input.finalizationGenerationSlot)
+            if (!row && !input.reviewRevisionContext && !input.finalizationGenerationSlot && !input.characterStateRebuild)
                 fail('GENERATION_CHAPTER_MISSING');
             brief = row ? without(row, ['created_at', 'updated_at', 'notes', 'notes_updated_at']) : null;
             add(`blueprint:${input.chapterNumber}`, 0, stable(brief), 'author-constraint', 'selected chapter brief');
