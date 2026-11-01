@@ -12,7 +12,7 @@ import { buildGenerationSourceBinding, rebuildGenerationSourceBinding, compareGe
 import { currentDerivedCharacterFields } from '../current-character-projection';
 import { readPortableCurrentAuthority } from '../portable-current-authority';
 import { createPortableTransferAuthority, mapPortableTransferAuthority, serializePortableTransferAuthority } from '../portable-transfer-authority';
-import { freezeFinalizedCharacterSnapshot, SummaryRepository } from '../../repositories/summary-repository';
+import { freezeFinalizedCharacterSnapshot, invalidateContinuityProjectionFrom, SummaryRepository } from '../../repositories/summary-repository';
 import { MATERIAL_DECISION_MAX_INPUT_UNITS, MATERIAL_DECISION_RECEIPT_VERSION, type MaterialDecisionReceipt } from '../../../src/shared/generation-owner-contract';
 import { captureReviewRevisionContext } from '../review-revision-context';
 import { textHash } from '../../repositories/generation-run-repository';
@@ -145,6 +145,23 @@ describe('main rebuilt generation sources', () => {
             mentalState: { kind: 'legacy', revision: 4 },
         });
         expect(JSON.parse(projected[0]!.cs_provenance)).not.toHaveProperty('keyItems');
+        expect(f.db.prepare("SELECT * FROM characters WHERE character_id='character-proved'").get()).toEqual(stored);
+
+        const revised = '早章重定稿后的可核验原文';
+        f.db.prepare('INSERT INTO contents(id,body) VALUES(4,?)').run(revised);
+        f.db.prepare("UPDATE drafts SET status='superseded' WHERE id=3").run();
+        f.db.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id) VALUES(4,1,2,'finalized',4)").run();
+        f.db.prepare(`INSERT INTO finalization_outbox(finalization_id,draft_id,chapter_number,chapter_title,content_hash,content_revision,content_snapshot,target_file_name)
+          VALUES('final-4',4,1,'重定稿',?,1,?,'chapter1-new.txt')`).run(hash(revised), revised);
+        invalidateContinuityProjectionFrom(f.db, 1);
+        f.input.selectedFinalizedDraftIds = [4];
+        const degraded = f.build();
+        const degradedCharacters = degraded.materials.find(item => item.ref.sourceId === 'characters:all')?.text;
+        expect(degradedCharacters).toContain('作者地点');
+        expect(degradedCharacters).toContain('旧档案警觉');
+        expect(degradedCharacters).not.toContain('当前派生伤势');
+        expect(degraded.materials.find(item => item.ref.sourceId === 'finalized:4:final-4')?.text).toBe(revised);
+        expect(JSON.stringify(degraded.materials)).not.toContain('chapter-character-state:');
         expect(f.db.prepare("SELECT * FROM characters WHERE character_id='character-proved'").get()).toEqual(stored);
     });
 

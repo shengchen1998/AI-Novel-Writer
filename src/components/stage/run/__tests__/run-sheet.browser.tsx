@@ -134,14 +134,15 @@ describe('运行侧页', () => {
       if (channel === 'finalized-character:read-state-continuity') return [
         { source: source(1), chapterTitle: '北塔', status: 'valid', snapshot: snapshot(1) },
         { source: source(2), chapterTitle: '南桥', status: 'valid', snapshot: snapshot(2, 1) },
-        { source: source(3), chapterTitle: '雾港', status: 'missing-snapshot' },
-        { source: source(4), chapterTitle: '归途', status: 'waiting-predecessor', predecessorGapChapterNumber: 3 },
+        { source: source(3), chapterTitle: '雾港', status: 'missing-snapshot', invalidatedByChange: true },
+        { source: source(4), chapterTitle: '归途', status: 'waiting-predecessor', predecessorGapChapterNumber: 3, invalidatedByChange: true },
       ]
       return base(channel, ...args)
     })
     await render()
     await vi.waitFor(() => expect(host!.textContent).toContain('当前基线：第 2 章'))
     expect(host!.textContent).toContain('继承第 1 章快照')
+    expect(host!.textContent).toContain('失效范围：第 3 至 4 章；旧快照保留为历史。')
     expect(host!.textContent).toContain('第 3 章缺少角色状态快照')
     expect(host!.textContent).toContain('第 4 章等待前驱')
     expect(host!.textContent).toContain('第 3 章缺少有效快照')
@@ -151,6 +152,7 @@ describe('运行侧页', () => {
     await act(async () => useLocaleStore.setState({ locale: 'en-US' }))
     expect(host!.textContent).toContain('Current baseline: chapter 2')
     expect(host!.textContent).toContain('Inherited from the chapter 1 snapshot')
+    expect(host!.textContent).toContain('Invalidated range: chapters 3–4; previous snapshots are retained as history.')
     expect(host!.textContent).toContain('Chapter 4 is waiting for its predecessor')
     expect(host!.textContent).toContain('Cache rebuild required')
   })

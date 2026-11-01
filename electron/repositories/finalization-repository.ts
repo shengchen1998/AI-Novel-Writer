@@ -274,7 +274,9 @@ export class FinalizationRepository {
         UPDATE drafts SET status = 'superseded', updated_at = datetime('now')
         WHERE chapter_number = ? AND status = 'finalized' AND id <> ?
       `).run(input.chapterNumber, input.draftId)
-      if (replaced.changes > 0) invalidateContinuityProjectionFrom(db, input.chapterNumber)
+      const hasLaterFinalization = db.prepare("SELECT 1 FROM drafts WHERE chapter_number>? AND status='finalized' LIMIT 1")
+        .get(input.chapterNumber) !== undefined
+      if (replaced.changes > 0 || hasLaterFinalization) invalidateContinuityProjectionFrom(db, input.chapterNumber)
 
       db.prepare('UPDATE contents SET body = ? WHERE id = ?')
         .run(input.content, draft.content_id)
