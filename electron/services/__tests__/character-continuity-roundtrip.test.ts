@@ -181,7 +181,7 @@ describe('#491 角色状态来源经过多次备份往返', { timeout: 30_000 },
 
     finalizeChapter(repaired, 2, 2, CHAPTER_2)
     expect(deriveCharacterState(repaired, 2, { location: '南港旅店', keyItems: '铜钥匙', recentEvents: '住进南港旅店' }, '住进南港旅店'))
-      .toMatchObject({ applied: 3 })
+      .toMatchObject({ applied: 2, unchanged: 1 })
   })
 
   it('别的角色有一条格式损坏的来源记录时，跳过它，其余角色照常修复', async () => {
@@ -201,7 +201,7 @@ describe('#491 角色状态来源经过多次备份往返', { timeout: 30_000 },
     expect(derivedFields(repaired)).toEqual(['location', 'keyItems'])
   })
 
-  it('来源章节已重新定稿的旧派生字段经两次往返后仍显示为历史，但后续章节能照常更新它', async () => {
+  it('来源章节重定稿后旧派生字段经两次往返仍是历史，补齐新快照后后续章节可更新', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'f491-'))
     roots.push(base)
     const a = createSourceProject(base)
@@ -213,11 +213,13 @@ describe('#491 角色状态来源经过多次备份往返', { timeout: 30_000 },
     const second = await exportAndRestore(base, await exportAndRestore(base, a, 'stale-1'), 'stale-2')
     expect(derivedFields(second)).toEqual([])
     expect(characterRow().cs_key_items).toBe('铜钥匙')
+    deriveCharacterState(second, 2, { keyItems: '铜钥匙' }, '她把钥匙藏进袖口')
+    expect(derivedFields(second)).toEqual(['keyItems'])
     finalizeChapter(second, 3, 2, CHAPTER_2)
     expect(deriveCharacterState(second, 3, { keyItems: '铜钥匙、旅店房卡' }, '住进南港旅店')).toMatchObject({ applied: 1 })
   })
 
-  it('修复后真正的来源冲突仍然拦下：后面章节已更新过的字段，不接受重新定稿的前面章节覆盖', async () => {
+  it('早章重定稿形成前驱缺口时，不越过连续链覆盖后续章节缓存', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'f491-'))
     roots.push(base)
     const a = createSourceProject(base)
@@ -231,9 +233,9 @@ describe('#491 角色状态来源经过多次备份往返', { timeout: 30_000 },
     expect(derivedFields(repaired)).toEqual(['location'])
 
     finalizeChapter(repaired, 3, 1, `${CHAPTER_1}她在塔顶等到天亮。`, 2)
-    expect(() => deriveCharacterState(repaired, 3, { location: '北塔塔顶' }, '她在塔顶等到天亮'))
-      .toThrow('FINALIZED_CHARACTER_SOURCE_CONFLICT')
+    expect(deriveCharacterState(repaired, 3, { location: '北塔塔顶' }, '她在塔顶等到天亮')).toMatchObject({ applied: 0 })
     expect(characterRow().cs_location).toBe('南港旅店')
+    expect(derivedFields(repaired)).toEqual([])
   })
 
   it('不是经验证转移来的项目、或来源不在本库的派生字段，打开时都不改写', async () => {
@@ -429,7 +431,7 @@ describe('#484 删章记录作为来源证明的边界', { timeout: 60_000 }, ()
     expect(deriveCharacterState(opened, 2, { location: '南港旅店' }, '住进南港旅店')).toMatchObject({ applied: 1 })
   })
 
-  it('删章后恢复两次，章节顺序仍然生效：先定稿第 3 章，再回头定稿第 2 章报来源冲突', async () => {
+  it('删章后恢复两次再乱序补章：第 2 章形成缺口，不覆盖第 3 章当前缓存', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'f484-'))
     roots.push(base)
     const a = createSourceProject(base)
@@ -440,8 +442,9 @@ describe('#484 删章记录作为来源证明的边界', { timeout: 60_000 }, ()
     finalizeChapter(c, 3, 3, CHAPTER_3)
     expect(deriveCharacterState(c, 3, { location: '南港码头' }, '收到师父的来信')).toMatchObject({ applied: 1 })
     finalizeChapter(c, 2, 2, CHAPTER_2)
-    expect(() => deriveCharacterState(c, 2, { location: '南港旅店' }, '住进南港旅店')).toThrow('FINALIZED_CHARACTER_SOURCE_CONFLICT')
+    expect(deriveCharacterState(c, 2, { location: '南港旅店' }, '住进南港旅店')).toMatchObject({ applied: 0 })
     expect(characterRow().cs_location).toBe('南港码头')
+    expect(derivedFields(c)).toEqual([])
   })
 
   it('删章后恢复两次，作者手改过的地点不被定稿覆盖', async () => {
@@ -458,7 +461,7 @@ describe('#484 删章记录作为来源证明的边界', { timeout: 60_000 }, ()
     expect(characterRow().cs_location).toBe('作者写的地点')
   })
 
-  it('来源定稿 ID 既没有收据也没有删章记录：恢复两次后前缀不改记，定稿仍报来源冲突', async () => {
+  it('来源定稿 ID 没有收据或删章记录时前缀不改记，新定稿快照可重建当前缓存', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'f484-'))
     roots.push(base)
     const a = createSourceProject(base)
@@ -471,6 +474,8 @@ describe('#484 删章记录作为来源证明的边界', { timeout: 60_000 }, ()
     const c = await exportAndRestore(base, await exportAndRestore(base, a, 'forged-1'), 'forged-2')
     expect(String(characterRow().cs_provenance)).toContain(a.projectId)
     finalizeChapter(c, 2, 2, CHAPTER_2)
-    expect(() => deriveCharacterState(c, 2, { location: '南港旅店' }, '住进南港旅店')).toThrow('FINALIZED_CHARACTER_SOURCE_CONFLICT')
+    expect(deriveCharacterState(c, 2, { location: '南港旅店' }, '住进南港旅店')).toMatchObject({ applied: 1 })
+    expect(characterRow().cs_location).toBe('南港旅店')
+    expect(derivedFields(c)).toEqual(['location'])
   })
 })
