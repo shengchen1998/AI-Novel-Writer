@@ -29,6 +29,7 @@ export function installWindowCloseGuard(win: BrowserWindow): void {
     if (
       state.approved
       || win.webContents.isDestroyed()
+      || win.webContents.isCrashed()
       || win.webContents.isLoadingMainFrame()
     ) return
     event.preventDefault()

@@ -1,6 +1,10 @@
 export interface SingleInstanceWindow {
   isDestroyed(): boolean
   isMinimized(): boolean
+  webContents: {
+    isCrashed(): boolean
+    reload(): void
+  }
   restore(): void
   show(): void
   focus(): void
@@ -16,6 +20,7 @@ export interface SingleInstanceRuntimeOptions {
 
 export function focusExistingInstance(window: SingleInstanceWindow | null | undefined): void {
   if (!window || window.isDestroyed()) return
+  if (window.webContents.isCrashed()) window.webContents.reload()
   if (window.isMinimized()) window.restore()
   window.show()
   window.focus()
