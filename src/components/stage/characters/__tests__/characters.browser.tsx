@@ -512,13 +512,35 @@ describe('角色名单', () => {
     await vi.waitFor(() => expect(startWorkflow).toHaveBeenCalledTimes(1))
   })
 
+  it('空章节状态提供完整空状态和可键盘到达的重新读取动作', async () => {
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel, ...args) => {
+      if (channel === 'finalized-character:list-state-snapshots') return []
+      return base(channel, ...args)
+    })
+    await render()
+    await click('章节状态')
+    await vi.waitFor(() => expect(host!.querySelector('.pi-empty-title')?.textContent).toBe('还没有章节状态快照'))
+    expect(host!.querySelector('.pi-empty-text')?.textContent).toContain('完成定稿')
+    const retry = button('重新读取')!
+    expect(retry.classList.contains('pi-btn')).toBe(true)
+    await act(async () => {
+      retry.focus()
+      await userEvent.keyboard('{Enter}')
+    })
+    await vi.waitFor(() => expect(invoke.mock.calls.filter(([channel]) => channel === 'finalized-character:list-state-snapshots')).toHaveLength(2))
+  })
+
   it('章节状态先读摘要，点击后按角色读取基线、缺口、完整来源与证据，并切换英文文案', async () => {
     const source = { draftId: 7, finalizationId: 'final-1', chapterNumber: 1, contentHash: 'a'.repeat(64) }
     pendingStates = [{ ...stateCandidate('s-physical', 'physicalState', '可能受伤'), source }]
     const summary = {
       snapshotId: 'snapshot-1', status: 'invalid', source, chapterTitle: '北塔', snapshotHash: 'b'.repeat(64), createdAt: '2026-11-01 12:00:00',
       baseline: { kind: 'roster', predecessor: null }, inputHash: 'c'.repeat(64), continuityGeneration: 0,
-      character: { characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['林舟'], updatedAtChapter: 1 },
+      character: {
+        characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['林舟'], updatedAtChapter: 1,
+        involved: true, changedFields: ['physicalState'],
+      },
     }
     const fields = [
       { field: 'location', value: '旧站', provenance: { kind: 'author', chapterNumber: 0 }, knownAtChapter: 0 },
@@ -551,6 +573,8 @@ describe('角色名单', () => {
 
     await click('章节状态')
     await vi.waitFor(() => expect(button(/第 1 章 · 北塔/)).toBeTruthy())
+    expect(button(/第 1 章 · 北塔/)!.classList.contains('pi-btn')).toBe(true)
+    expect(host!.textContent).toContain('本章变化：身体状态')
     expect(invoke.mock.calls.find(([channel]) => channel === 'finalized-character:list-state-snapshots')?.[1])
       .toEqual({ characterId: linzhou.characterId })
     expect(invoke.mock.calls.some(([channel]) => channel === 'finalized-character:read-state-snapshot')).toBe(false)
@@ -596,7 +620,7 @@ describe('角色名单', () => {
     const makeSummary = (snapshotId: string, source: typeof source1, validity: string) => ({
       snapshotId, source, chapterTitle: '北塔', snapshotHash: 'c'.repeat(64), createdAt: '2026-11-01 12:00:00',
       baseline: { kind: 'roster', predecessor: null }, inputHash: 'd'.repeat(64), continuityGeneration: 0, validity,
-      character: { characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['林舟'], updatedAtChapter: 1 },
+      character: { characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['林舟'], updatedAtChapter: 1, involved: true, changedFields: [] },
     })
     const summary1 = makeSummary('snapshot-1', source1, 'superseded')
     const summary2 = makeSummary('snapshot-2', source2, 'valid')
@@ -692,7 +716,7 @@ describe('角色名单', () => {
       snapshotId: 'snapshot-identity', status: 'valid', validity: 'valid', source, chapterTitle: '北塔',
       snapshotHash: 'b'.repeat(64), createdAt: '2026-11-01 12:00:00', baseline: { kind: 'snapshot', predecessor: null },
       inputHash: 'c'.repeat(64), continuityGeneration: 0,
-      character: { characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['阿舟'], updatedAtChapter: 1 },
+      character: { characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['阿舟'], updatedAtChapter: 1, involved: true, changedFields: [] },
     }
     const occurrence = (displayName: string, reason: 'unknown-id' | 'ambiguous', candidateIds: string[]) => ({
       selectionKey: `update:${displayName}`, displayName, originalText: displayName, candidateIds,

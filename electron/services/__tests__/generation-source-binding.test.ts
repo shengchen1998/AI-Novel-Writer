@@ -158,7 +158,7 @@ describe('main rebuilt generation sources', () => {
         const degraded = f.build();
         const degradedCharacters = degraded.materials.find(item => item.ref.sourceId === 'characters:all')?.text;
         expect(degradedCharacters).toContain('作者地点');
-        expect(degradedCharacters).toContain('旧档案警觉');
+        expect(degradedCharacters).not.toContain('旧档案警觉');
         expect(degradedCharacters).not.toContain('当前派生伤势');
         expect(degraded.materials.find(item => item.ref.sourceId === 'finalized:4:final-4')?.text).toBe(revised);
         expect(JSON.stringify(degraded.materials)).not.toContain('chapter-character-state:');
@@ -194,7 +194,7 @@ describe('main rebuilt generation sources', () => {
             expect(text).not.toContain(f.chapter20Injury);
             expect(text).not.toContain(f.chapter20Clue);
             expect(text).toContain(f.authorCharacterState);
-            expect(text).toContain(f.legacyCharacterState);
+            expect(text).not.toContain(f.legacyCharacterState);
             expect(text).not.toContain(f.earlierDerivedState);
             expect(db.prepare('SELECT * FROM characters WHERE character_id=?').get(f.characterId)).toEqual(stored);
         });
@@ -265,7 +265,7 @@ describe('main rebuilt generation sources', () => {
             expect(rebuiltCharacters).not.toContain(f.chapter20Injury);
             expect(rebuiltCharacters).not.toContain(f.chapter20Clue);
             expect(rebuiltCharacters).toContain(f.authorCharacterState);
-            expect(rebuiltCharacters).toContain(f.legacyCharacterState);
+            expect(rebuiltCharacters).not.toContain(f.legacyCharacterState);
             expect(rebuiltCharacters).not.toContain(f.earlierDerivedState);
             const currentFields = currentDerivedCharacterFields(db, f.targetProjectId, f.sourceProjectId)[f.characterId];
             expect(currentFields).not.toContain('physicalState');

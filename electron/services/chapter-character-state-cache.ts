@@ -23,8 +23,8 @@ function currentRevision(provenance: StoredProvenance | undefined): number {
 
 function cacheFieldsMatch(db: Database.Database, context: FinalizedCharacterContext, originProjectId?: string): boolean {
   for (const character of context.characters) {
-    const row = db.prepare('SELECT * FROM characters WHERE character_id=? AND retired=0').get(character.characterId) as Record<string, unknown> | undefined
-    if (!row) return false
+    const row = db.prepare('SELECT * FROM characters WHERE character_id=?').get(character.characterId) as Record<string, unknown> | undefined
+    if (!row || row.retired !== 0) continue
     const provenance = JSON.parse(String(row.cs_provenance || '{}')) as Record<string, StoredProvenance>
     for (const captured of character.fields) {
       const stored = provenance[captured.field]

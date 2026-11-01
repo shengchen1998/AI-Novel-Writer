@@ -12,6 +12,7 @@ CREATE TABLE chapter_character_state_snapshots (
  content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
  snapshot_hash TEXT NOT NULL CHECK(length(snapshot_hash) = 64),
+ unresolved_json TEXT NOT NULL DEFAULT '[]',
  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_chapter_character_state_snapshot_source
@@ -22,6 +23,8 @@ CREATE TABLE chapter_character_state_snapshot_characters (
  display_name_snapshot TEXT NOT NULL,
  aliases_json TEXT NOT NULL,
  updated_at_chapter INTEGER NOT NULL CHECK(updated_at_chapter >= 0),
+ involved INTEGER NOT NULL DEFAULT 0 CHECK(involved IN (0,1)),
+ changed_fields_json TEXT NOT NULL DEFAULT '[]',
  PRIMARY KEY(snapshot_id,character_id)
 );
 CREATE INDEX idx_chapter_character_state_snapshot_character

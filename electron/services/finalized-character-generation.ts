@@ -21,10 +21,10 @@ export class FinalizedCharacterGeneration {
     private readonly scope: { projectId: string; epoch: string }, private readonly assertCurrent: () => void,
     private readonly transferOrigin: () => string | undefined = () => undefined) {}
 
-  readContext(draftId: number) {
+  readContext(draftId: number, allowInactiveIdentities = false) {
     this.assertCurrent()
     if (!Number.isSafeInteger(draftId) || draftId < 1) throw new Error('GENERATION_CHARACTER_DRAFT_INVALID')
-    const context = SummaryRepository.readFinalizedCharacterContext(draftId, this.scope, this.db)
+    const context = SummaryRepository.readFinalizedCharacterContext(draftId, this.scope, this.db, allowInactiveIdentities)
     const characterStateBaseline = ChapterCharacterStateSnapshotRepository.captureBaseline(context, this.db)
     const contextId = randomUUID()
     if (this.contexts.size >= 64) this.contexts.delete(this.contexts.keys().next().value!)

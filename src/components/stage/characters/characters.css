@@ -544,26 +544,22 @@
 }
 
 .cast-history-item {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-1);
   width: 100%;
+  height: auto;
+  min-height: 44px;
   padding: var(--s-2) var(--s-3);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-lg);
-  background: var(--paper);
-  color: var(--ink-2);
-  font: 500 var(--fs-13)/1.5 var(--font-ui);
+  line-height: 1.5;
   text-align: left;
-  cursor: pointer;
+  white-space: normal;
 }
 
-.cast-history-item[aria-pressed='true'] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--ink);
-}
-
-.cast-history-item:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.cast-history-impact {
+  display: block;
+  color: var(--ink-3);
+  font-size: var(--fs-12);
 }
 
 .cast-history-heading p,

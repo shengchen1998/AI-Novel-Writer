@@ -568,7 +568,7 @@ export function buildGenerationSourceBinding(deps: GenerationSourceBindingDepend
     const finalizationSlot = input.finalizationGenerationSlot ?? (rebuildChapter ? { source: rebuildChapter.source, stepKey: 'character_cards' as const } : undefined);
     const finalizationContext = finalizationSlot ? captureFinalizationGenerationContext(deps.db, finalizationSlot, input, facts.language,
         importPrompts[finalizationSlot.stepKey === 'chapter_notes' ? 'generate_chapter_notes' : 'update_character_cards']!,
-        input.characterStateRebuild?.extraction ?? input.finalizationGenerationContext) : undefined;
+        input.characterStateRebuild?.extraction ?? input.finalizationGenerationContext, Boolean(input.characterStateRebuild)) : undefined;
     const rebuildContext: ChapterCharacterStateRebuildManifest | undefined = input.characterStateRebuild && finalizationContext
         ? { version: 1, rebuildId: input.characterStateRebuild.rebuildId, plan: structuredClone(input.characterStateRebuild.plan), extraction: finalizationContext } : undefined;
     if (finalizationContext) add('finalization-generation-context', 0, JSON.stringify(finalizationContext), 'finalized-fact', 'main captured finalization identity, original field baselines and selected prompt');

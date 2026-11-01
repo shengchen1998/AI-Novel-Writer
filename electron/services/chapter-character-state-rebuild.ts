@@ -182,7 +182,7 @@ export class ChapterCharacterStateRebuild {
     const proof = proveFinalizedCharacterGeneration(this.db, this.runs, this.projectId, handle, reference)
     const operationId = chapterCharacterStateRebuildOperationId(context.rebuildId, context.extraction.slot.source.finalizationId)
     const receipt = SummaryRepository.commitFinalizedCharacterStates(proof.context, proof.response, this.db, this.transferOrigin(),
-      context.extraction.characterStateBaseline, operationId)
+      context.extraction.characterStateBaseline, operationId, true)
     const snapshotId = this.snapshotForRun(run)?.snapshotId ?? null
     const batch = proof.response.unresolved.some(item => item.displayName.trim())
       ? this.characters.stage({ kind: 'finalized-generation', handle: proof.currentHandle, artifact: reference }) : undefined

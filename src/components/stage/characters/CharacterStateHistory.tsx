@@ -8,7 +8,10 @@ import type {
 import type { PendingFinalizedCharacterStateCandidateSummary } from '../../../shared/finalized-continuity'
 import { CHARACTER_STATE_FIELDS } from '../../editor/character-state-fields'
 import { Button } from '../../ui/Button'
+import { EmptyState } from '../../ui/EmptyState'
+import { Notice } from '../../ui/Notice'
 import CharacterStateContinuity from './CharacterStateContinuity'
+import { CharacterStateFieldContent, CharacterStateImpact, CharacterStateValidity } from './CharacterStateMetadata'
 import CharacterStateVersionComparison from './CharacterStateVersionComparison'
 
 export default function CharacterStateHistory({ characterId }: { characterId: string }) {
@@ -50,16 +53,9 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
     }
   }
 
-  const sourceLabel = (kind: 'author' | 'derived' | 'legacy') => {
-    if (kind === 'author') return text('作者输入', 'Author input')
-    if (kind === 'derived') return text('定稿派生', 'Derived from finalized prose')
-    return text('Legacy（来源未知）', 'Legacy · Unknown source')
-  }
-  const validityLabel = (validity: ChapterCharacterStateSnapshotVersionSummary['validity']) => {
-    if (validity === 'valid') return text('当前有效', 'Currently valid')
-    if (validity === 'superseded') return text('已取代', 'Superseded')
-    if (validity === 'waiting-predecessor') return text('等待前驱', 'Waiting for predecessor')
-    return text('已失效', 'Invalid')
+  const retryList = () => {
+    setListStatus('loading')
+    setReload(value => value + 1)
   }
 
   return (
@@ -71,30 +67,37 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
         {listStatus === 'error' && (
           <div role="alert">
             <p>{text('章节状态这次没读出来，可以重新读取。', 'Chapter states could not be loaded. Try reading them again.')}</p>
-            <Button variant="secondary" size="sm" onClick={() => {
-              setListStatus('loading')
-              setReload(value => value + 1)
-            }}>{text('重新读取', 'Retry')}</Button>
+            <Button variant="secondary" size="sm" onClick={retryList}>{text('重新读取', 'Retry')}</Button>
           </div>
         )}
-        {listStatus === 'ready' && summaries.length === 0 && <p>{text('还没有章节状态快照。', 'No chapter state snapshots yet.')}</p>}
+        {listStatus === 'ready' && summaries.length === 0 && (
+          <EmptyState
+            heading={text('还没有章节状态快照', 'No chapter state snapshots yet')}
+            description={text('完成定稿并生成角色状态后，可在这里查看历史。', 'Finalize a chapter and generate its character state to see the history here.')}
+            action={<Button variant="secondary" size="sm" onClick={retryList}>{text('重新读取', 'Retry')}</Button>}
+          />
+        )}
         {listStatus === 'ready' && summaries.length > 0 && (
           <ul className="cast-history-list">
             {summaries.map(summary => (
               <li key={summary.snapshotId}>
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  size="sm"
                   className="cast-history-item"
                   aria-pressed={detail?.snapshotId === summary.snapshotId}
                   disabled={detailStatus === 'loading'}
                   onClick={() => { void openSnapshot(summary.snapshotId) }}
                 >
-                  {text(
-                    `第 ${summary.source.chapterNumber} 章 · ${summary.chapterTitle} · ${summary.source.finalizationId}`,
-                    `Chapter ${summary.source.chapterNumber} · ${summary.chapterTitle} · ${summary.source.finalizationId}`,
-                  )}
-                  <span className="cast-history-validity"> · {validityLabel(summary.validity)}</span>
-                </button>
+                  <span>
+                    {text(
+                      `第 ${summary.source.chapterNumber} 章 · ${summary.chapterTitle} · ${summary.source.finalizationId}`,
+                      `Chapter ${summary.source.chapterNumber} · ${summary.chapterTitle} · ${summary.source.finalizationId}`,
+                    )}
+                    <span className="cast-history-validity"> · <CharacterStateValidity validity={summary.validity} /></span>
+                  </span>
+                  <CharacterStateImpact character={summary.character} />
+                </Button>
               </li>
             ))}
           </ul>
@@ -112,6 +115,7 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
             <header className="cast-history-heading">
               <h2>{text(`第 ${detail.source.chapterNumber} 章 · ${detail.chapterTitle}`, `Chapter ${detail.source.chapterNumber} · ${detail.chapterTitle}`)}</h2>
               <p>{detail.character.displayNameSnapshot}{detail.character.aliases.length > 0 ? ` · ${detail.character.aliases.join(' / ')}` : ''}</p>
+              <CharacterStateImpact character={detail.character} />
             </header>
             {detail.unresolved && detail.unresolved.length > 0 && (
               <section className="cast-history-source cast-history-unresolved" aria-label={text('未解析身份', 'Unresolved identities')}>
@@ -136,10 +140,10 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
               </section>
             )}
             {detail.status === 'invalid' && (
-              <p className="run-note" data-tone="danger">{text(
+              <Notice tone="danger" title={text(
                 '快照已失效，仅作历史查看，不作为当前派生状态。',
                 'Invalid snapshot: kept for history only and not used as current derived state.',
-              )}</p>
+              )} />
             )}
             <section className="cast-history-source" aria-label={text('定稿来源', 'Finalization source')}>
               <h3>{text('定稿来源', 'Finalization source')}</h3>
@@ -169,26 +173,8 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
                 return (
                   <section key={field} className="cast-history-field" aria-label={text(zh, en)}>
                     <h3>{text(zh, en)}</h3>
-                    <p className="cast-history-value">{snapshotField.value || '—'}</p>
-                    <p className="cast-history-meta">
-                      <span>{sourceLabel(snapshotField.provenance.kind)}</span>
-                      <span>{snapshotField.knownAtChapter === null
-                        ? text('已知时点未知', 'Known time unknown')
-                        : text(`已知时点：第 ${snapshotField.knownAtChapter} 章`, `Known at chapter ${snapshotField.knownAtChapter}`)}</span>
-                      {pendingCandidates.some(candidate => candidate.finalizationId === detail.source.finalizationId
-                        && candidate.characterId === characterId && candidate.field === field) && (
-                        <span>{text('待确认', 'Pending confirmation')}</span>
-                      )}
-                    </p>
-                    {snapshotField.provenance.kind === 'derived' && (
-                      <p className="cast-history-field-source"><code>{snapshotField.provenance.source.finalizationId}</code></p>
-                    )}
-                    {snapshotField.evidence && (
-                      <div className="cast-history-evidence">
-                        <h4>{text('正文证据', 'Finalized prose evidence')}</h4>
-                        <blockquote>{snapshotField.evidence.text}</blockquote>
-                      </div>
-                    )}
+                    <CharacterStateFieldContent field={snapshotField} characterId={characterId}
+                      finalizationId={detail.source.finalizationId} pendingCandidates={pendingCandidates} />
                   </section>
                 )
               })}

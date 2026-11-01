@@ -60,7 +60,7 @@ export function currentCharacterProjection(db: Database.Database, projectId: str
                     || Number.isSafeInteger(value.revision) && Number(value.revision) >= 0;
                 if (value.kind === 'author') trusted = (keys.join() === 'chapterNumber,kind' || keys.join() === 'chapterNumber,kind,revision')
                     && Number.isSafeInteger(value.chapterNumber) && Number(value.chapterNumber) >= 0 && safeRevision;
-                else if (value.kind === 'legacy') trusted = (keys.join() === 'kind' || keys.join() === 'kind,revision') && safeRevision;
+                else if (value.kind === 'legacy') trusted = cacheReady && (keys.join() === 'kind' || keys.join() === 'kind,revision') && safeRevision;
                 else if (value.kind === 'derived') {
                     const source = value.source;
                     const order = value.sourceOrder;

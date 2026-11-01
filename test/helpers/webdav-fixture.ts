@@ -21,7 +21,16 @@ function encodeDavHref(value: string): string {
 export class DavFixture {
   readonly files = new Map<string, Buffer>()
   readonly collections = new Set<string>(['/dav/'])
-  readonly requests: Array<{ method: string; url: string }> = []
+  readonly requests: Array<{ method: string; url: string; authorization: string; ifNoneMatch: string }> = []
+  propfindBody: string | null = null
+  dropAfterPutSuffix: string | null = null
+  corruptDroppedPut = false
+  redirectSuffix: string | null = null
+  redirectLocation = ''
+  slowGetSuffix: string | null = null
+  stallUpload = false
+  onUpload?: () => void
+  private dropped = false
   private readonly server: Server
   baseUrl = ''
 
@@ -44,14 +53,36 @@ export class DavFixture {
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const method = request.method ?? ''
     const url = request.url ?? ''
-    this.requests.push({ method, url })
+    this.requests.push({
+      method,
+      url,
+      authorization: String(request.headers.authorization ?? ''),
+      ifNoneMatch: String(request.headers['if-none-match'] ?? ''),
+    })
+    if (this.redirectSuffix && url.endsWith(this.redirectSuffix)) {
+      response.writeHead(302, { location: this.redirectLocation })
+      response.end()
+      return
+    }
     if (method === 'MKCOL') {
       this.collections.add(url.endsWith('/') ? url : `${url}/`)
       response.writeHead(201).end()
       return
     }
     if (method === 'PUT') {
-      const body = await requestBytes(request)
+      if (url.endsWith('archive.ainovel')) {
+        this.onUpload?.()
+        if (this.stallUpload) { request.resume(); return }
+      }
+      let body: Buffer
+      try { body = await requestBytes(request) } catch { return }
+      if (this.dropAfterPutSuffix && url.endsWith(this.dropAfterPutSuffix) && !this.dropped) {
+        this.dropped = true
+        if (this.corruptDroppedPut && body.length) body = Buffer.concat([body.subarray(0, -1), Buffer.from('!')])
+        this.files.set(url, body)
+        request.socket.destroy()
+        return
+      }
       this.files.set(url, body)
       response.writeHead(201).end()
       return
@@ -61,11 +92,16 @@ export class DavFixture {
       if (!body) { response.writeHead(404).end(); return }
       response.writeHead(200, { 'content-length': body.length, 'content-type': 'application/octet-stream' })
       if (method === 'HEAD') { response.end(); return }
+      if (this.slowGetSuffix && url.endsWith(this.slowGetSuffix)) {
+        response.write(body.subarray(0, Math.max(1, Math.floor(body.length / 2))))
+        setTimeout(() => response.end(body.subarray(Math.max(1, Math.floor(body.length / 2)))), 150)
+        return
+      }
       response.end(body)
       return
     }
     if (method === 'PROPFIND') {
-      const body = this.multistatus(url)
+      const body = this.propfindBody ?? this.multistatus(url)
       response.writeHead(207, { 'content-type': 'application/xml', 'content-length': Buffer.byteLength(body) })
       response.end(body)
       return

@@ -207,12 +207,17 @@ describe('first chapter character-state snapshot through real finalization and g
     seedCharacter('character-zhou', '周研', { recentEvents: '仍在旧站' }, {
       recentEvents: { kind: 'author', chapterNumber: 1, revision: 1 },
     })
+    seedCharacter('character-unmentioned', '未出场角色', {}, {})
     const finalized = await finalize()
     expect(finalized).toMatchObject({ success: true, committed: true, draftId: 1 })
     await commitChapterNotes(1)
     const extraction = await extractedCommit(1, [{
       characterId: 'character-lin',
       currentState: { powerLevel: '模型推断能力', physicalState: '受伤' },
+      evidence: { start: 0, end: prose.length, text: prose },
+    }, {
+      characterId: 'character-zhou',
+      currentState: { recentEvents: '仍在旧站' },
       evidence: { start: 0, end: prose.length, text: prose },
     }])
 
@@ -230,7 +235,10 @@ describe('first chapter character-state snapshot through real finalization and g
         chapterNumber: 1,
         contentHash: finalized.contentHash,
       },
-      character: { characterId: 'character-lin', displayNameSnapshot: '林岚', aliases: ['林岚'], updatedAtChapter: 1 },
+      character: {
+        characterId: 'character-lin', displayNameSnapshot: '林岚', aliases: ['林岚'], updatedAtChapter: 1,
+        involved: true, changedFields: ['physicalState'],
+      },
     })
     expect(summaries[0]!.character).not.toHaveProperty('fields')
 
@@ -250,10 +258,14 @@ describe('first chapter character-state snapshot through real finalization and g
     })
 
     const unchanged = await readSnapshot(summaries[0]!.snapshotId as string, 'character-zhou')
-    expect(unchanged.character).toMatchObject({ characterId: 'character-zhou', displayNameSnapshot: '周研' })
+    expect(unchanged.character).toMatchObject({
+      characterId: 'character-zhou', displayNameSnapshot: '周研', involved: true, changedFields: [], updatedAtChapter: 1,
+    })
     expect((unchanged.character as { fields: unknown[] }).fields).toHaveLength(6)
     expect((unchanged.character as { fields: Array<Record<string, unknown>> }).fields)
       .toContainEqual(expect.objectContaining({ field: 'recentEvents', value: '仍在旧站', provenance: { kind: 'author', chapterNumber: 1 } }))
+    const unmentioned = await readSnapshot(summaries[0]!.snapshotId as string, 'character-unmentioned')
+    expect(unmentioned.character).toMatchObject({ involved: false, changedFields: [], updatedAtChapter: 0 })
 
     const replay = await invoke('finalization-generation:commit', extraction.request)
     expect(replay).toEqual(effect)
@@ -318,6 +330,30 @@ describe('first chapter character-state snapshot through real finalization and g
       provenance: { kind: 'derived', source: { chapterNumber: 1, finalizationId: firstExtraction.source.finalizationId } },
       evidence: { start: 0, end: firstProse.length, text: firstProse },
     })
+  })
+
+  it('lists snapshot summaries without reading the full character and field chain', async () => {
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedDraft(1, 1, '第一章正文。')
+    seedDraft(2, 1, '第二章正文。', 2, '南桥')
+    await finalize(1, '第一章正文。')
+    const first = await extractedCommit(1, [])
+    await invoke('finalization-generation:commit', first.request)
+    await finalize(2, '第二章正文。', 1, 2, '南桥')
+    const second = await extractedCommit(2, [])
+    await invoke('finalization-generation:commit', second.request)
+
+    const prepare = vi.spyOn(getProjectDb()!, 'prepare')
+    const summaries = await listSnapshots('character-lin')
+    expect(summaries).toHaveLength(2)
+    expect(summaries.every(summary => !(summary.character as Record<string, unknown>).fields)).toBe(true)
+    const fullContentQueries = prepare.mock.calls.map(([sql]) => sql).filter(sql =>
+      sql.includes('chapter_character_state_snapshot_fields')
+      || sql.includes('SELECT * FROM chapter_character_state_snapshot_characters WHERE snapshot_id=?'))
+    expect(fullContentQueries).toEqual([])
+
+    const detail = await readSnapshot(summaries[0]!.snapshotId as string, 'character-lin')
+    expect((detail.character as { fields: unknown[] }).fields).toHaveLength(6)
   })
 
   it('freezes an out-of-order chapter baseline before extraction without future or unfinalized values', async () => {
@@ -1310,10 +1346,7 @@ describe('first chapter character-state snapshot through real finalization and g
     const deletedFinalizationIds = [firstFinalization.finalizationId, revisedFinalization.finalizationId]
     const deletedSnapshotIds = before.filter(item => (item.source as { chapterNumber: number }).chapterNumber === 1)
       .map(item => item.snapshotId as string)
-    const proposalIds = [
-      ...deletedFinalizationIds.map(id => `fcs:${id}`),
-      ...deletedSnapshotIds.map(id => `fcu:${id}`),
-    ]
+    const proposalIds = deletedFinalizationIds.map(id => `fcs:${id}`)
     const proposalRows = getProjectDb()!.prepare(`SELECT proposal_id FROM character_identity_proposals
       WHERE proposal_id IN (${proposalIds.map(() => '?').join(',')})`).all(...proposalIds)
     expect(proposalRows).toEqual([])
@@ -1377,6 +1410,57 @@ describe('first chapter character-state snapshot through real finalization and g
     expect(await listSnapshots('character-survivor')).toHaveLength(2)
     await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'ready' })
     expect(second.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['retired', 'deleted'] as const)('rebuilds frozen identities after they are %s without reviving the current cache identity', async lifecycle => {
+    const firstProse = '第一章林岚在北塔受伤。'
+    const secondProse = '第二章林岚抵达南桥。'
+    seedCharacter('character-old', '林岚', {}, {})
+    seedCharacter('character-survivor', '林澜', {}, {})
+    getProjectDb()!.transaction(() => refreshCharacterIdentityProjection(getProjectDb()!))()
+    seedDraft(1, 1, firstProse)
+    seedDraft(2, 1, secondProse, 2, '南桥')
+    await finalize(1, firstProse)
+    await finalize(2, secondProse, 1, 2, '南桥')
+    type Roster = {
+      revision: number
+      identityRevision: number
+      schemaVersion: 1
+      entries: Array<Record<string, unknown> & { characterId: string; name: string }>
+    }
+    if (lifecycle === 'retired') {
+      getProjectDb()!.prepare('UPDATE characters SET retired=1 WHERE character_id=?').run('character-old')
+    } else {
+      const beforeMerge = await invoke<Roster>('db:character-roster-read', session.projectPath)
+      const survivor = beforeMerge.entries.find(entry => entry.characterId === 'character-survivor')!
+      const merge = await invoke<{ success: boolean; error?: string }>('db:character-roster-commit', {
+        operationId: 'merge-delete-before-rebuild', expectedRevision: beforeMerge.revision,
+        expectedIdentityRevision: beforeMerge.identityRevision, schemaVersion: beforeMerge.schemaVersion, intent: 'manual_edit',
+        entries: [{ ...survivor, name: '林岚' }], renames: [{ characterId: 'character-survivor', newName: '林岚' }],
+      }, session.projectPath)
+      expect(merge.error).toBeUndefined()
+    }
+
+    const fetch = streamResponses([JSON.stringify({ updates: [{
+      characterId: 'character-old', currentState: { physicalState: '重建伤势' },
+      evidence: { start: 0, end: firstProse.length, text: firstProse },
+    }] }), JSON.stringify({ updates: [] })])
+    await expect(invoke('finalized-character:begin-state-rebuild', {
+      rebuildId: 'd8f8752e-ad01-4f0e-9d62-a434f2bd18f2', modelId: model.id,
+    })).resolves.toMatchObject({ status: 'completed', completedChapters: 2, nextChapterNumber: null })
+    expect(fetch).toHaveBeenCalledTimes(2)
+
+    const history = await listSnapshots('character-old')
+    expect(history).toHaveLength(2)
+    expect(history.every(snapshot => snapshot.validity === 'valid')).toBe(true)
+    const firstDetail = await readSnapshot(history[0]!.snapshotId as string, 'character-old')
+    expect(firstDetail.character).toMatchObject({ displayNameSnapshot: '林岚' })
+    expect((firstDetail.character as { fields: Array<Record<string, unknown>> }).fields)
+      .toContainEqual(expect.objectContaining({ field: 'physicalState', value: '重建伤势' }))
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'ready' })
+    const current = await invoke<Roster>('db:character-roster-read', session.projectPath)
+    expect(current.entries.map(entry => entry.characterId)).toEqual(['character-survivor'])
+    expect(getProjectDb()!.prepare('SELECT retired FROM characters WHERE character_id=?').pluck().get('character-old')).toBe(1)
   })
 
   it('fails the whole extraction when any occurrence has no determinable identity', async () => {
