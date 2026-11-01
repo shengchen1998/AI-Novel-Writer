@@ -9,6 +9,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import { getProjectDb } from '../database'
 import { ContentRepository } from './content-repository'
 import type { DraftSourceDependency } from '../../src/shared/draft-source-dependency'
+import type { DraftSource } from '../../src/shared/draft-source'
 import { RECEIPTED_DRAFT_STATUS_SQL, isReceiptedDraftStatus, type DraftStatus } from '../../src/shared/draft-status'
 
 const DRAFT_META_SELECT = `
@@ -314,7 +315,7 @@ export class DraftRepository {
     static create(params: {
         chapterNumber: number
         version?: number
-        source: 'write' | 'rewrite' | 'author'
+        source: DraftSource
         content: string
         wordCount: number
         sourceDependencies?: DraftSourceDependency[]

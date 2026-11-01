@@ -6,6 +6,7 @@
  */
 import { ipc } from './ipc-client'
 import type { DraftStatus } from '../shared/draft-status'
+import type { DraftSource } from '../shared/draft-source'
 
 // 导入后端的类型定义
 import type { DraftMeta as DB_DraftMeta } from '../../electron/repositories/draft-repository'
@@ -22,7 +23,7 @@ export interface DraftMeta {
   wordCount?: number
   createdAt: string
   updatedAt?: string
-  source: 'write' | 'rewrite' | 'author'
+  source: DraftSource
 
   // 为了尽量不改 UI，我们伪造这两个字段
   filePath: string

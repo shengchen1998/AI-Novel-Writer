@@ -5,6 +5,7 @@ import type { DraftMeta } from '../draft-index'
 import { ipc } from '../ipc-client'
 
 import type { DraftStatus } from '../../shared/draft-status'
+import type { DraftSource } from '../../shared/draft-source'
 import type { ProjectSessionContext } from '../../shared/ipc-channels'
 import { sameProjectPathKey } from '../../shared/project-session-context'
 import { FINALIZATION_SHARED_WRITE_RESOURCE_KINDS } from '../../shared/workflow-resource-claims'
@@ -179,7 +180,7 @@ export async function parseDraftMeta(
     return {
       ...dbMeta,
       status: dbMeta.status as DraftStatus,
-      source: dbMeta.source as 'write' | 'rewrite',
+      source: dbMeta.source as DraftSource,
       fileName: `draft_v${dbMeta.version}.md`,
       filePath: formatResourceUri({ kind: 'draft', id: dbMeta.id }),
     } as unknown as DraftMeta

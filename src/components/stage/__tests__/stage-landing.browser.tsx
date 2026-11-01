@@ -168,6 +168,10 @@ describe('打开作品时的落点', () => {
     expect(await landWith([], { 1: [{ ...draft(1, 'draft'), source: 'author', wordCount: 0 }] })).toEqual({ type: 'chapter', chapter: 1 })
   })
 
+  it.each(['write', 'rewrite'] as const)('大纲没写完、只有一份空白 %s 工作稿、没有蓝图：仍落在架构', async source => {
+    expect(await landWith([], { 1: [{ ...draft(1, 'draft'), source, wordCount: 0 }] })).toEqual({ type: 'world-building', chapter: undefined })
+  })
+
   it('上一次打开留下的架构与蓝图数据不算这次的', async () => {
     const current = session('current')
     await open(current, READY)
