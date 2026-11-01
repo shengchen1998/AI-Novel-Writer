@@ -106,7 +106,7 @@ Every generation run appears in the run sheet, with In progress, History, and Di
 - **Plot & threads**: follow the main plot, subplots, and foreshadowing chapter by chapter, and record where each thread is planted, advanced, or resolved.
 - **Knowledge base**: import reference material (.txt, .md). Local full-text search works even without a retrieval model.
 - **Version history**: every past version of a chapter is kept. Compare it with the current draft, or restore it as a new draft.
-- **Export and backup**: export as merged Markdown, one Markdown file per chapter, or plain text. Archive a book on your computer or back it up to a WebDAV cloud you connect. Restoring always creates a new copy.
+- **Export and backup**: export as merged Markdown, one Markdown file per chapter, or plain text. Archive a book on your computer or back it up to a WebDAV cloud you connect. Local archives, complete copies, and immutable WebDAV generations preserve chapter-state snapshots with their finalization sources, field-level provenance, predecessors, and continuity generations. Restoring always creates a new copy. Old recovery candidates, publication jobs, and generation runs remain frozen history and never replay or call a model automatically. Snapshots from deleted chapters do not reappear after recovery. You can read history and diffs, inspect gaps, and explicitly continue a rebuild in the new copy.
 
 ### Writing skills: bring your own writing rules
 
