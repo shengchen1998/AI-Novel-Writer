@@ -158,6 +158,31 @@ describe('chapter workflow guard locale', () => {
       message: expect.stringContaining('No chapter blueprints have been generated'),
     })
   })
+
+  it.each([
+    ['finalized', { id: 41, chapterNumber: 1, status: 'finalized', source: 'author' }, true],
+    ['unfinalized', null, false],
+  ] as const)('accepts only a %s author draft as finalized predecessor context without opening draft candidates', async (_label, predecessor, expected) => {
+    vi.mocked(ipc.invokeWithProjectSession).mockReset()
+    vi.mocked(ipc.invokeWithProjectSession).mockImplementation((async (
+      _session: ProjectSessionContext,
+      channel: string,
+    ) => {
+      if (channel === 'db:blueprint-get-all') return [{ chapterNumber: 2 }]
+      if (channel === 'db:character-get-all') return [{ id: 1 }]
+      if (channel === 'db:draft-get-finalized') return predecessor
+      if (channel === 'db:post-process-get-latest-run') return null
+      throw new Error(`Unexpected channel: ${channel}`)
+    }) as never)
+
+    const result = await guardChapterWriting(2, projectPath, projectSession, 'en-US')
+
+    expect(result.ok).toBe(expected)
+    if (!expected) expect(result.message).toContain('Chapter 1 has not been finalized')
+    const channels = vi.mocked(ipc.invokeWithProjectSession).mock.calls.map(([, channel]) => channel)
+    expect(channels).toContain('db:draft-get-finalized')
+    expect(channels).not.toContain('db:draft-get-latest')
+  })
 })
 
 describe('character regeneration guard locale', () => {

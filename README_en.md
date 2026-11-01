@@ -83,6 +83,10 @@ The main button is "Write chapter N". The small popover next to it holds only th
 
 The single-chapter view takes a chapter from unwritten to final. After AI writes a draft, you can edit it yourself or ask AI to review it. The review report lists each note. You check or ignore each one, and you can add your own. The revision comes back as a diff that you confirm paragraph by paragraph, so nothing is overwritten. When it reads right, finalize the chapter.
 
+On an unwritten chapter, choose "Write it myself" to create an empty "Author-provided" draft without configuring a model, then type or paste plain text. You can finalize an author draft without AI review. If you want feedback, explicitly request AI review; only checked notes go into revision, which still must be confirmed in the diff before merging.
+
+Later single-chapter and batch AI writing keep the existing previous-chapter finalization guards; once finalized, an author draft can also serve as finalized predecessor context for ordinary AI writing. Batch writing stops when it reaches any existing draft, including an author-provided one, preserving its content rather than skipping or overwriting it.
+
 ![Single-chapter view: the setup, architecture, blueprint, and manuscript steps on the left, chapter 3 prose in the middle, and the review report on the right](docs/assets/readme/v130-en-chapter.webp)
 
 While writing, AI receives this chapter's blueprint, the related characters, the worldbuilding, summaries of earlier chapters, and the full previous chapter, not a chat transcript of the whole book.
