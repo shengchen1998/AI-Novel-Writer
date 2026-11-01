@@ -137,7 +137,8 @@ describe('运行侧页开着普通分页时，架构页页头只在真放不下�
 describe('运行侧页浮起时盖在内容区上面，被它盖住的东西点不到也走不到', () => {
   it('关系图谱的工具条不画在侧页上面，侧页区域里的点都属于侧页', async () => {
     const { sheet } = await renderAt(790, 'character')
-    const graphView = host!.querySelectorAll<HTMLButtonElement>('.cast-view-switch button')[2]
+    const graphView = [...host!.querySelectorAll<HTMLButtonElement>('.cast-view-switch button')]
+      .find(button => button.textContent === '关系图谱')!
     await act(async () => graphView.click())
     await vi.waitFor(() => expect(host!.querySelector('.cast-graph canvas')).not.toBeNull())
     const toolbarButtons = [...host!.querySelectorAll<HTMLElement>('.cast-graph button')].filter(coveredBy(sheet))

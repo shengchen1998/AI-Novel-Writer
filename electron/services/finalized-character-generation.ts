@@ -10,6 +10,7 @@ import { SummaryRepository } from '../repositories/summary-repository'
 import { GenerationRunRepository, textHash } from '../repositories/generation-run-repository'
 import type { CharacterProposalService } from './character-proposal-service'
 import { proveFinalizedCharacterGeneration } from './finalized-character-generation-proof'
+import { ChapterCharacterStateSnapshotRepository } from '../repositories/chapter-character-state-snapshot-repository'
 
 export class FinalizedCharacterGeneration {
   private readonly contexts = new Map<string, FinalizedCharacterContext>()
@@ -40,6 +41,18 @@ export class FinalizedCharacterGeneration {
   decideStateCandidate(request: FinalizedCharacterStateDecisionRequest) {
     this.assertCurrent()
     return SummaryRepository.decideFinalizedCharacterStateCandidate(request, this.db)
+  }
+
+  listStateSnapshots(characterId: string) {
+    this.assertCurrent()
+    if (!characterId.trim()) throw new Error('FINALIZED_CHARACTER_IDENTITY_REQUIRED')
+    return ChapterCharacterStateSnapshotRepository.listForCharacter(this.db, characterId)
+  }
+
+  readStateSnapshot(snapshotId: string, characterId: string) {
+    this.assertCurrent()
+    if (!snapshotId.trim() || !characterId.trim()) throw new Error('FINALIZED_CHARACTER_SNAPSHOT_INVALID')
+    return ChapterCharacterStateSnapshotRepository.readForCharacter(this.db, snapshotId, characterId)
   }
 
   /** A renderer cannot manufacture the identity/field snapshot placed in a generation manifest. */

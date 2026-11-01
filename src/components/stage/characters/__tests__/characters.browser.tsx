@@ -509,4 +509,56 @@ describe('角色名单', () => {
     await click('发送并提取')
     await vi.waitFor(() => expect(startWorkflow).toHaveBeenCalledTimes(1))
   })
+
+  it('章节状态先读摘要，点击后按角色读取完整来源与证据，并切换英文文案', async () => {
+    const source = { draftId: 7, finalizationId: 'final-1', chapterNumber: 1, contentHash: 'a'.repeat(64) }
+    const summary = {
+      snapshotId: 'snapshot-1', source, chapterTitle: '北塔', snapshotHash: 'b'.repeat(64), createdAt: '2026-11-01 12:00:00',
+      character: { characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['林舟'], updatedAtChapter: 1 },
+    }
+    const fields = [
+      { field: 'location', value: '旧站', provenance: { kind: 'author', chapterNumber: 0 }, knownAtChapter: 0 },
+      { field: 'powerLevel', value: '', provenance: { kind: 'legacy' }, knownAtChapter: null },
+      {
+        field: 'physicalState', value: '受伤', knownAtChapter: 1,
+        provenance: { kind: 'derived', source },
+        evidence: { start: 0, end: 6, text: '林舟在北塔受伤' },
+      },
+      { field: 'mentalState', value: '警觉', provenance: { kind: 'legacy' }, knownAtChapter: null },
+      { field: 'keyItems', value: '黄铜钥匙', provenance: { kind: 'author', chapterNumber: 1 }, knownAtChapter: 1 },
+      { field: 'recentEvents', value: '抵达北塔', provenance: { kind: 'derived', source }, knownAtChapter: 1 },
+    ]
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel, ...args) => {
+      if (channel === 'finalized-character:list-state-snapshots') return [summary]
+      if (channel === 'finalized-character:read-state-snapshot') return { ...summary, character: { ...summary.character, fields } }
+      return base(channel, ...args)
+    })
+    await render()
+    expect(invoke.mock.calls.some(([channel]) => channel === 'finalized-character:list-state-snapshots')).toBe(false)
+
+    await click('章节状态')
+    await vi.waitFor(() => expect(button(/第 1 章 · 北塔/)).toBeTruthy())
+    expect(invoke.mock.calls.find(([channel]) => channel === 'finalized-character:list-state-snapshots')?.[1])
+      .toEqual({ characterId: linzhou.characterId })
+    expect(invoke.mock.calls.some(([channel]) => channel === 'finalized-character:read-state-snapshot')).toBe(false)
+
+    await click(/第 1 章 · 北塔/)
+    await vi.waitFor(() => expect(host!.textContent).toContain('林舟在北塔受伤'))
+    expect(invoke.mock.calls.find(([channel]) => channel === 'finalized-character:read-state-snapshot')?.[1])
+      .toEqual({ snapshotId: 'snapshot-1', characterId: linzhou.characterId })
+    expect(host!.textContent).toContain('final-1')
+    expect(host!.textContent).toContain('定稿派生')
+    expect(host!.textContent).toContain('作者输入')
+    expect(host!.textContent).toContain('来源未知')
+    expect(host!.textContent).toContain('已知时点：第 1 章')
+    expect(host!.textContent).toContain('正文证据')
+
+    await act(async () => useLocaleStore.setState({ locale: 'en-US' }))
+    expect(host!.textContent).toContain('Derived from finalized prose')
+    expect(host!.textContent).toContain('Author input')
+    expect(host!.textContent).toContain('Unknown source')
+    expect(host!.textContent).toContain('Known at chapter 1')
+    expect(host!.textContent).toContain('Finalized prose evidence')
+  })
 })

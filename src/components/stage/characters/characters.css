@@ -515,6 +515,156 @@
   white-space: pre-line;
 }
 
+/* ================= 章节状态快照 ================= */
+.cast-history {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
+  gap: var(--s-5);
+}
+
+.cast-history-index,
+.cast-history-detail {
+  min-width: 0;
+}
+
+.cast-history-index h2,
+.cast-history-heading h2 {
+  margin: 0 0 var(--s-3);
+  color: var(--ink);
+  font: 600 var(--fs-16)/1.4 var(--font-ui);
+}
+
+.cast-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cast-history-item {
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  color: var(--ink-2);
+  font: 500 var(--fs-13)/1.5 var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cast-history-item[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.cast-history-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cast-history-heading p,
+.cast-history-index p,
+.cast-history-detail > p {
+  color: var(--ink-3);
+  font-size: var(--fs-13);
+}
+
+.cast-history-source {
+  margin-bottom: var(--s-4);
+  padding: var(--s-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+}
+
+.cast-history-source h3,
+.cast-history-field h3,
+.cast-history-evidence h4 {
+  margin: 0 0 var(--s-2);
+  color: var(--ink);
+  font: 600 var(--fs-13)/1.4 var(--font-ui);
+}
+
+.cast-history-source dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--s-1) var(--s-3);
+  margin: 0;
+  font-size: var(--fs-12);
+}
+
+.cast-history-source dt {
+  color: var(--ink-3);
+}
+
+.cast-history-source dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.cast-history-source code,
+.cast-history-field-source code {
+  overflow-wrap: anywhere;
+}
+
+.cast-history-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.cast-history-field {
+  padding: var(--s-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+}
+
+.cast-history-value {
+  margin: 0 0 var(--s-2);
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.cast-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-4);
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-12);
+}
+
+.cast-history-field-source {
+  margin: var(--s-1) 0 0;
+  color: var(--ink-3);
+  font-size: var(--fs-11);
+}
+
+.cast-history-evidence {
+  margin-top: var(--s-3);
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--rule);
+}
+
+.cast-history-evidence blockquote {
+  margin: 0;
+  color: var(--ink-2);
+  font: 400 var(--fs-13)/1.7 var(--font-prose);
+  white-space: pre-wrap;
+}
+
+@container (width < 760px) {
+  .cast-history {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* ================= 窄宽度（按角色页自身的宽度，运行侧页并排时也成立） ================= */
 @container (width < 760px) {
   .cast-body {

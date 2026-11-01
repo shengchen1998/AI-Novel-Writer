@@ -67,7 +67,9 @@ The setup page records the genre, audience, writing language, total chapters, an
 
 ![Architecture page with the premise, cast, worldbuilding, and plot outline all confirmed](docs/assets/readme/v130-en-architecture.webp)
 
-The cast is edited alongside the architecture. Each character has a profile, a current state, and a relationship graph. You can paste character cards or import them from a file.
+The cast is edited alongside the architecture. Each character has a profile, a current state, chapter states, and a relationship graph. You can paste character cards or import them from a file.
+
+In a book with no earlier finalized chapter, the first finalization reuses the same character-state extraction to append a complete chapter-state snapshot without another model call. "Chapter states" in the character profile lists each finalization. Select one to read all dynamic fields for that character, the finalization receipt, and each field's author, finalized-prose, or unknown source, known chapter, and prose evidence. Snapshots are read-only history and cannot overwrite the current character card.
 
 ![Cast page with four characters on the left and the profile of the protagonist Mara Lind on the right](docs/assets/readme/v130-en-cast.webp)
 
