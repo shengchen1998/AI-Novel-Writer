@@ -12,7 +12,7 @@ import { useEditorStore } from '../../../../stores/editor-store'
 import { useLLMStore } from '../../../../stores/llm-store'
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
-import { openChapterPlan } from '../../../../stores/navigation/stage-navigation'
+import { openChapter, openChapterPlan } from '../../../../stores/navigation/stage-navigation'
 import { useProjectStore } from '../../../../stores/project-store'
 import { useWorkflowStore } from '../../../../stores/workflow-store'
 import { openDraftTab } from '../../../../stores/open-draft-tab'
@@ -126,7 +126,7 @@ describe('单章视图的主按钮随五种状态变化', () => {
     await click('自己写')
     await vi.waitFor(() => expect(backend.writes('db:draft-create')).toHaveLength(1))
     const [request] = backend.writes('db:draft-create')[0] as [Record<string, unknown>]
-    expect(request).toEqual({ chapterNumber: 3, version: 1, source: 'author', content: '', wordCount: 0, sourceDependencies: [] })
+    expect(request).toEqual({ chapterNumber: 3, version: 1, source: 'author', content: '', wordCount: 0, sourceDependencies: [], onlyWhenChapterEmpty: true })
     await expect.element(page.getByRole('button', { name: 'AI 审稿', exact: true })).toBeVisible()
     await expect.element(page.getByText('作者提供', { exact: true })).toBeVisible()
     expect(page.getByRole('button', { name: '自己写', exact: true }).elements()).toHaveLength(0)
@@ -154,6 +154,104 @@ describe('单章视图的主按钮随五种状态变化', () => {
     expect(backend.state.drafts[0]?.id).toBe(activeTab()?.draftId)
     expect(startWorkflow).not.toHaveBeenCalled()
     expect(backend.state.calls.filter(call => call.channel.startsWith('generation:'))).toEqual([])
+  })
+
+  it('待写：同一帧重复点击只创建一份作者草稿', async () => {
+    await mount()
+    await act(async () => openChapterPlan(3, BLUEPRINT.title, SESSION))
+    let release = () => {}
+    const hold = new Promise<void>(resolve => { release = resolve })
+    const invoke = backend.invoke.getMockImplementation()!
+    backend.invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:draft-create') await hold
+      return invoke(channel, ...args)
+    })
+    const button = page.getByRole('button', { name: '自己写', exact: true }).element() as HTMLButtonElement
+
+    await act(async () => {
+      button.click()
+      button.click()
+      await Promise.resolve()
+    })
+    try {
+      expect(backend.invoke.mock.calls.filter(([channel]) => channel === 'db:draft-create')).toHaveLength(1)
+    } finally {
+      release()
+    }
+    await expect.element(page.getByRole('button', { name: 'AI 审稿', exact: true })).toBeVisible()
+    expect(backend.state.drafts).toHaveLength(1)
+  })
+
+  it('待写：AI 正在生成且尚未存稿时不允许同时创建作者草稿', async () => {
+    await mount()
+    await act(async () => openChapterPlan(3, BLUEPRINT.title, SESSION))
+    await act(async () => { await useDraftStore.getState().loadAllDrafts(SESSION.projectPath, SESSION) })
+    await act(async () => useWorkflowStore.setState({ activeRuns: [{
+      id: 'chapter-run', type: 'chapter_creation', status: 'running', currentStepIndex: 0,
+      resourceKeys: ['chapter:3'], projectPath: SESSION.projectPath, steps: [],
+    }] as never }))
+    const button = page.getByRole('button', { name: '自己写', exact: true })
+
+    await expect.element(button).toBeDisabled()
+    await act(async () => (button.element() as HTMLButtonElement).click())
+    expect(backend.writes('db:draft-create')).toEqual([])
+  })
+
+  it('待写：另一窗口先建稿时提示冲突并刷新打开最新正文', async () => {
+    await mount()
+    await act(async () => openChapterPlan(3, BLUEPRINT.title, SESSION))
+    const fallback = backend.invoke.getMockImplementation()!
+    backend.invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:draft-create') {
+        backend.addDraft({ status: 'draft', content: '另一窗口已经保存的正文。' })
+        return { success: false, error: 'Error: DRAFT_AUTHOR_CREATE_CONFLICT' }
+      }
+      return fallback(channel, ...args)
+    })
+    const shown = vi.spyOn(toast, 'error').mockImplementation(() => undefined)
+    try {
+      await click('自己写')
+
+      await expect.element(page.getByRole('button', { name: 'AI 审稿', exact: true })).toBeVisible()
+      expect(activeTab()).toMatchObject({ draftId: backend.state.drafts[0]?.id, content: '另一窗口已经保存的正文。' })
+      expect(backend.state.drafts).toHaveLength(1)
+      expect(shown).toHaveBeenCalledWith('这一章已有草稿或定稿，也可能有尚未完成的 AI 写作。没有创建新的作者草稿。已刷新本章，请基于最新状态继续。')
+      expect(shown.mock.calls.flat().join(' ')).not.toContain('DRAFT_AUTHOR_CREATE_CONFLICT')
+    } finally {
+      shown.mockRestore()
+    }
+  })
+
+  it.each([
+    { locale: 'zh-CN', button: '自己写', message: '创建作者草稿失败' },
+    { locale: 'en-US', button: 'Write it myself', message: 'Could not create the author draft' },
+  ] as const)('待写：创建失败显示 $message、刷新本章并允许重试', async ({ locale, button, message }) => {
+    useLocaleStore.setState({ locale })
+    await mount()
+    await act(async () => openChapterPlan(3, BLUEPRINT.title, SESSION))
+    const fallback = backend.invoke.getMockImplementation()!
+    let fail = true
+    backend.invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:draft-create' && fail) {
+        fail = false
+        return { success: false }
+      }
+      return fallback(channel, ...args)
+    })
+    const shown = vi.spyOn(toast, 'error').mockImplementation(() => undefined)
+    try {
+      const readsBefore = backend.writes('db:draft-list').length
+      await click(button)
+      await vi.waitFor(() => expect(shown).toHaveBeenCalledWith(message))
+      await expect.element(page.getByRole('button', { name: button, exact: true })).toBeEnabled()
+      expect(backend.writes('db:draft-list')).toHaveLength(readsBefore + 1)
+
+      await click(button)
+      await vi.waitFor(() => expect(activeTab()?.draftId).toBe(backend.state.drafts[0]?.id))
+      expect(backend.state.drafts).toHaveLength(1)
+    } finally {
+      shown.mockRestore()
+    }
   })
 
   it('待写：英文入口可用键盘激活，来源显示为作者提供', async () => {
@@ -622,7 +720,7 @@ describe('单章视图的主按钮随五种状态变化', () => {
 async function mountWithSpine() {
   const SpineBeside = () => {
     const view = useStageView()
-    return <StageSpine stages={view.stages} chapters={view.chapters} location={view.location} onStage={() => {}} onChapter={() => {}} onResource={() => {}} onSettings={() => {}} />
+    return <StageSpine stages={view.stages} chapters={view.chapters} location={view.location} onStage={() => {}} onChapter={chapterNumber => { void openChapter(chapterNumber) }} onResource={() => {}} onSettings={() => {}} />
   }
   host = document.createElement('div')
   host.className = 'paper-ink stage-shell'
@@ -636,6 +734,30 @@ async function mountWithSpine() {
 const spineRow = () => page.getByRole('list', { name: '章节' }).getByRole('button', { name: /雨夜车站/ })
 
 describe('流程脊与单章视图同一个阶段', () => {
+  it('空白作者草稿持续显示为草稿，可从章节列表重开，删除后恢复待写', async () => {
+    const draft = backend.addDraft({ status: 'draft', source: 'author', content: '' })
+    await mountWithSpine()
+    await openDraft(draft.id)
+    await expect.element(spineRow()).toHaveTextContent('待审稿')
+    await expect.element(spineRow()).toHaveAttribute('data-phase', 'draft')
+    await expect.element(host!.querySelector<HTMLElement>('[data-stage="manuscript"]')).toHaveAttribute('data-state', 'active')
+
+    await act(async () => useEditorStore.getState().openFile({
+      id: 'chapter-plan:4', name: '第 4 章', type: 'chapter', chapterNumber: 4,
+      projectKey: SESSION.projectPath, projectSessionLease: SESSION.leaseId,
+    }))
+    await act(async () => (spineRow().element() as HTMLButtonElement).click())
+    await vi.waitFor(() => expect(activeTab()).toMatchObject({ draftId: draft.id, content: '', draftStatus: 'draft' }))
+    await expect.element(page.getByRole('button', { name: 'AI 审稿', exact: true })).toBeVisible()
+
+    await click('更多操作')
+    await act(async () => page.getByRole('menuitem', { name: '删除这一稿…' }).click())
+    await click('删除这一稿')
+    await expect.element(page.getByRole('button', { name: '自己写', exact: true })).toBeVisible()
+    expect(backend.state.drafts).toEqual([])
+    expect(backend.writes('db:draft-delete').map(args => args[0])).toEqual([draft.id])
+  })
+
   it('草稿上有审稿：流程脊写待修稿，单章视图的主按钮是按意见修稿', async () => {
     const draft = backend.addDraft({ status: 'draft' })
     backend.addReview(draft)
