@@ -60,6 +60,14 @@ export class FinalizedCharacterGeneration {
     return ChapterCharacterStateSnapshotRepository.readForCharacter(this.db, snapshotId, characterId)
   }
 
+  compareStateSnapshots(beforeSnapshotId: string, afterSnapshotId: string, characterId: string) {
+    this.assertCurrent()
+    if (!beforeSnapshotId.trim() || !afterSnapshotId.trim() || !characterId.trim()) {
+      throw new Error('FINALIZED_CHARACTER_SNAPSHOT_INVALID')
+    }
+    return ChapterCharacterStateSnapshotRepository.compareForCharacter(this.db, beforeSnapshotId, afterSnapshotId, characterId)
+  }
+
   readStateContinuity() {
     this.assertCurrent()
     return ChapterCharacterStateSnapshotRepository.readContinuity(this.db)

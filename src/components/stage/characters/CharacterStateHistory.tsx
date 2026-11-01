@@ -3,15 +3,16 @@ import { ipc } from '../../../services/ipc-client'
 import { useLocaleStore } from '../../../stores/locale-store'
 import type {
   ChapterCharacterStateSnapshotDetail,
-  ChapterCharacterStateSnapshotSummary,
+  ChapterCharacterStateSnapshotVersionSummary,
 } from '../../../shared/chapter-character-state-snapshot'
 import { CHARACTER_STATE_FIELDS } from '../../editor/character-state-fields'
 import { Button } from '../../ui/Button'
 import CharacterStateContinuity from './CharacterStateContinuity'
+import CharacterStateVersionComparison from './CharacterStateVersionComparison'
 
 export default function CharacterStateHistory({ characterId }: { characterId: string }) {
   const text = useLocaleStore(s => s.text)
-  const [summaries, setSummaries] = useState<ChapterCharacterStateSnapshotSummary[]>([])
+  const [summaries, setSummaries] = useState<ChapterCharacterStateSnapshotVersionSummary[]>([])
   const [listStatus, setListStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [detail, setDetail] = useState<ChapterCharacterStateSnapshotDetail | null>(null)
   const [detailStatus, setDetailStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -47,6 +48,12 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
     if (kind === 'derived') return text('定稿派生', 'Derived from finalized prose')
     return text('来源未知', 'Unknown source')
   }
+  const validityLabel = (validity: ChapterCharacterStateSnapshotVersionSummary['validity']) => {
+    if (validity === 'valid') return text('当前有效', 'Currently valid')
+    if (validity === 'superseded') return text('已取代', 'Superseded')
+    if (validity === 'waiting-predecessor') return text('等待前驱', 'Waiting for predecessor')
+    return text('已失效', 'Invalid')
+  }
 
   return (
     <section className="cast-history" aria-label={text('章节状态快照', 'Chapter state snapshots')}>
@@ -76,9 +83,10 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
                   onClick={() => { void openSnapshot(summary.snapshotId) }}
                 >
                   {text(
-                    `第 ${summary.source.chapterNumber} 章 · ${summary.chapterTitle}`,
-                    `Chapter ${summary.source.chapterNumber} · ${summary.chapterTitle}`,
+                    `第 ${summary.source.chapterNumber} 章 · ${summary.chapterTitle} · ${summary.source.finalizationId}`,
+                    `Chapter ${summary.source.chapterNumber} · ${summary.chapterTitle} · ${summary.source.finalizationId}`,
                   )}
+                  <span className="cast-history-validity"> · {validityLabel(summary.validity)}</span>
                 </button>
               </li>
             ))}
@@ -87,6 +95,8 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
       </div>
 
       <div className="cast-history-detail">
+        {summaries.length > 1 && <CharacterStateVersionComparison key={summaries.map(summary => summary.snapshotId).join(':')}
+          characterId={characterId} summaries={summaries} />}
         {detailStatus === 'idle' && summaries.length > 0 && <p>{text('选择一次定稿查看完整状态。', 'Choose a finalization to view its complete state.')}</p>}
         {detailStatus === 'loading' && <p role="status">{text('正在读取完整快照…', 'Loading the complete snapshot…')}</p>}
         {detailStatus === 'error' && <p role="alert">{text('完整快照这次没读出来，请重新选择。', 'The complete snapshot could not be loaded. Choose it again.')}</p>}
