@@ -12,7 +12,7 @@ import { buildGenerationSourceBinding, rebuildGenerationSourceBinding, compareGe
 import { currentDerivedCharacterFields } from '../current-character-projection';
 import { readPortableCurrentAuthority } from '../portable-current-authority';
 import { createPortableTransferAuthority, mapPortableTransferAuthority, serializePortableTransferAuthority } from '../portable-transfer-authority';
-import { SummaryRepository } from '../../repositories/summary-repository';
+import { freezeFinalizedCharacterSnapshot, SummaryRepository } from '../../repositories/summary-repository';
 import { MATERIAL_DECISION_MAX_INPUT_UNITS, MATERIAL_DECISION_RECEIPT_VERSION, type MaterialDecisionReceipt } from '../../../src/shared/generation-owner-contract';
 import { captureReviewRevisionContext } from '../review-revision-context';
 import { textHash } from '../../repositories/generation-run-repository';
@@ -125,6 +125,13 @@ describe('main rebuilt generation sources', () => {
                 keyItems: { kind: 'author', chapterNumber: 1, unexpected: 'bad' },
             }),
         );
+        f.db.prepare("DELETE FROM character_identity_proposals WHERE proposal_id='fcs:final-3'").run();
+        f.db.transaction(() => freezeFinalizedCharacterSnapshot(f.db, source))();
+        const context = SummaryRepository.readFinalizedCharacterContext(3, { projectId: 'p', epoch: 'e' }, f.db);
+        SummaryRepository.commitFinalizedCharacterStates(context, { updates: [{
+            characterId: 'character-proved', currentState: { physicalState: '当前派生伤势' },
+            evidence: { start: 0, end: context.content.length, text: context.content },
+        }], unresolved: [] }, f.db);
         const stored = f.db.prepare("SELECT * FROM characters WHERE character_id='character-proved'").get();
         const text = f.build().materials.find(item => item.ref.sourceId === 'characters:all')?.text;
         expect(text).toContain('可信角色');

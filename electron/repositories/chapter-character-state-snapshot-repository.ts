@@ -108,9 +108,10 @@ function baselineFromRow(db: Database.Database, row: SnapshotRow): ChapterCharac
   }
 }
 
-function summaryFromRows(db: Database.Database, row: SnapshotRow & CharacterRow): ChapterCharacterStateSnapshotSummary {
+function summaryFromRows(db: Database.Database, row: SnapshotRow & CharacterRow, status: 'valid' | 'invalid'): ChapterCharacterStateSnapshotSummary {
   return {
     snapshotId: row.snapshot_id,
+    status,
     source: sourceFromRow(row),
     chapterTitle: row.chapter_title,
     snapshotHash: row.snapshot_hash,
@@ -132,9 +133,10 @@ function versionSummaryFromRows(
   row: SnapshotRow & CharacterRow,
   validityByFinalization: Map<string, ChapterCharacterStateSnapshotValidity>,
 ): ChapterCharacterStateSnapshotVersionSummary {
+  const validity = validityByFinalization.get(row.finalization_id) ?? 'superseded'
   return {
-    ...summaryFromRows(db, row),
-    validity: validityByFinalization.get(row.finalization_id) ?? 'superseded',
+    ...summaryFromRows(db, row, validity === 'valid' ? 'valid' : 'invalid'),
+    validity,
   }
 }
 
@@ -266,6 +268,7 @@ function readContinuity(db: Database.Database): ChapterCharacterStateContinuityE
         && /^[a-f0-9]{64}$/.test(row.input_hash ?? '') && predecessorMatches
       snapshot = {
         snapshotId: row.snapshot_id,
+        status: valid ? 'valid' : 'invalid',
         source: sourceFromRow(row),
         chapterTitle: row.chapter_title,
         snapshotHash: row.snapshot_hash,
@@ -335,7 +338,8 @@ function captureBaseline(context: FinalizedCharacterContext, db: Database.Databa
   })
   const continuityGeneration = context.projectionGeneration
   const inputHash = sha256(JSON.stringify({ version: 1, source: context.source, continuityGeneration, predecessor, characters }))
-  return { kind: predecessor ? 'snapshot' : 'roster', predecessor, characters, inputHash, continuityGeneration }
+  const cacheRevision = db.prepare("SELECT revision FROM character_roster_meta WHERE id='main'").pluck().get() as number
+  return { kind: predecessor ? 'snapshot' : 'roster', predecessor, characters, inputHash, continuityGeneration, cacheRevision }
 }
 
 function buildPayload(context: FinalizedCharacterContext, updates: FinalizedCharacterStateUpdate[], chapterTitle: string,
@@ -479,5 +483,51 @@ export class ChapterCharacterStateSnapshotRepository {
 
   static readContinuity(db: Database.Database): ChapterCharacterStateContinuityEntry[] {
     return readContinuity(db)
+  }
+
+  static readLatestValidSnapshot(db: Database.Database): {
+    snapshotId: string
+    snapshotHash: string
+    source: FinalizedSourceIdentity
+    characters: ChapterCharacterStateSnapshotCharacter[]
+  } | null {
+    const entries = readContinuity(db)
+    const latest = entries.at(-1)
+    if (!latest || entries.some(entry => entry.status !== 'valid') || !latest.snapshot) return null
+    const row = readSnapshotRow(db, latest.snapshot.snapshotId)
+    const saved = row ? readPayload(db, row.snapshot_id) : null
+    if (!row || !saved || sha256(JSON.stringify(saved.payload)) !== row.snapshot_hash) return null
+    return { snapshotId: row.snapshot_id, snapshotHash: row.snapshot_hash, source: sourceFromRow(row), characters: saved.payload.characters }
+  }
+
+  static readCacheStatus(db: Database.Database): import('../../src/shared/chapter-character-state-snapshot').ChapterCharacterStateCacheStatus {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chapter_character_state_cache_meta'").get()) {
+      return { status: 'invalid', reason: 'not-established', snapshotId: null, source: null }
+    }
+    const row = db.prepare(`SELECT status,reason,snapshot_id,snapshot_hash,finalization_id FROM chapter_character_state_cache_meta WHERE id='main'`)
+      .get() as { status: 'ready' | 'rebuild-required' | 'invalid'; reason: 'cas-conflict' | 'continuity-incomplete' | 'not-established' | null
+        snapshot_id: string | null; snapshot_hash: string | null; finalization_id: string | null } | undefined
+    if (!row) return { status: 'invalid', reason: 'not-established', snapshotId: null, source: null }
+    const latest = ChapterCharacterStateSnapshotRepository.readLatestValidSnapshot(db)
+    const source = latest?.source ?? null
+    if (row.status === 'rebuild-required') {
+      return { status: row.status, reason: row.reason ?? 'cas-conflict', snapshotId: row.snapshot_id, source }
+    }
+    if (row.status !== 'ready' || !latest || row.snapshot_id !== latest.snapshotId
+      || row.snapshot_hash !== latest.snapshotHash || row.finalization_id !== latest.source.finalizationId) {
+      return { status: 'invalid', reason: 'continuity-incomplete', snapshotId: row.snapshot_id, source }
+    }
+    return { status: 'ready', reason: null, snapshotId: latest.snapshotId, source: latest.source }
+  }
+
+  static markCacheRebuildRequired(db: Database.Database, snapshotId: string | null, reason: 'cas-conflict' | 'continuity-incomplete'): void {
+    const snapshot = snapshotId ? readSnapshotRow(db, snapshotId) : undefined
+    db.prepare(`UPDATE chapter_character_state_cache_meta SET status='rebuild-required',reason=?,snapshot_id=?,snapshot_hash=?,finalization_id=?,
+      updated_at=datetime('now') WHERE id='main'`).run(reason, snapshot?.snapshot_id ?? null, snapshot?.snapshot_hash ?? null, snapshot?.finalization_id ?? null)
+  }
+
+  static markCacheReady(db: Database.Database, snapshot: { snapshotId: string; snapshotHash: string; source: FinalizedSourceIdentity }, rosterRevision: number): void {
+    db.prepare(`UPDATE chapter_character_state_cache_meta SET status='ready',reason=NULL,snapshot_id=?,snapshot_hash=?,finalization_id=?,roster_revision=?,
+      updated_at=datetime('now') WHERE id='main'`).run(snapshot.snapshotId, snapshot.snapshotHash, snapshot.source.finalizationId, rosterRevision)
   }
 }

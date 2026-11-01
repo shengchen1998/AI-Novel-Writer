@@ -73,6 +73,11 @@ export class FinalizedCharacterGeneration {
     return ChapterCharacterStateSnapshotRepository.readContinuity(this.db)
   }
 
+  readStateCache() {
+    this.assertCurrent()
+    return ChapterCharacterStateSnapshotRepository.readCacheStatus(this.db)
+  }
+
   /** A renderer cannot manufacture the identity/field snapshot placed in a generation manifest. */
   admit(selection: BeginGenerationRequest): string | undefined {
     this.assertCurrent()
@@ -100,18 +105,15 @@ export class FinalizedCharacterGeneration {
     const prepared = this.contexts.get(request.contextId)
     if (!prepared || request.handle.projectId !== this.scope.projectId || request.handle.epoch !== this.scope.epoch)
       throw new Error('GENERATION_CHARACTER_CONTEXT_REQUIRED')
-    return this.db.transaction(() => {
-      assertSources(request.handle)
-      const proof = proveFinalizedCharacterGeneration(this.db, this.runs, this.scope.projectId, request.handle, request.artifact)
-      if (!isDeepStrictEqual(proof.context, prepared.context)) throw new Error('GENERATION_CHARACTER_CONTEXT_MISMATCH')
-      // transferOrigin 同步读取已验证的转移凭据，与本事务同属一次同步执行；凭据被篡改只会读出 null/抛错，趋向冲突而非放行。
-      const receipt = SummaryRepository.commitFinalizedCharacterStates(prepared.context, proof.response, this.db, this.transferOrigin(),
-        prepared.characterStateBaseline ?? undefined)
-      // Nameless occurrences remain visible in the durable artifact; never invent a name for adoption.
-      const batch = proof.response.unresolved.some(item => item.displayName.trim())
-        ? characters.stage({ kind: 'finalized-generation', handle: request.handle, artifact: request.artifact }) : undefined
-      return { ...receipt, unresolved: structuredClone(proof.response.unresolved), ...(batch ? { proposalBatchId: batch.proposalBatchId } : {}) }
-    }).immediate()
+    assertSources(request.handle)
+    const proof = proveFinalizedCharacterGeneration(this.db, this.runs, this.scope.projectId, request.handle, request.artifact)
+    if (!isDeepStrictEqual(proof.context, prepared.context)) throw new Error('GENERATION_CHARACTER_CONTEXT_MISMATCH')
+    const receipt = SummaryRepository.commitFinalizedCharacterStates(prepared.context, proof.response, this.db, this.transferOrigin(),
+      prepared.characterStateBaseline ?? undefined)
+    // Nameless occurrences remain visible in the durable artifact; never invent a name for adoption.
+    const batch = proof.response.unresolved.some(item => item.displayName.trim())
+      ? characters.stage({ kind: 'finalized-generation', handle: request.handle, artifact: request.artifact }) : undefined
+    return { ...receipt, unresolved: structuredClone(proof.response.unresolved), ...(batch ? { proposalBatchId: batch.proposalBatchId } : {}) }
   }
 
   close(): void { this.contexts.clear() }

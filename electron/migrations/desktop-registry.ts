@@ -8,6 +8,7 @@ import { applyM04ImportEffectLedger, createM04Migration } from './m04-import-eff
 import { applyM05CharacterAssets, createM05Migration } from './m05-character-assets'
 import { applyM07ChapterCharacterStateSnapshots, createM07Migration } from './m07-chapter-character-state-snapshots'
 import { applyM08ChapterCharacterStateContinuity, createM08Migration } from './m08-chapter-character-state-continuity'
+import { applyM09ChapterCharacterStateCache, createM09Migration } from './m09-chapter-character-state-cache'
 import { createM00Migration } from './m00-baseline'
 import { initializeLegacyBaselineSchema, applyBaselineTables } from './baseline-schema'
 import { ensureBaselineBlueprintTables } from './baseline-blueprint-schema'
@@ -15,7 +16,7 @@ import { SqliteSchemaAdapter, sqliteSchemaFingerprint } from './sqlite-schema-ad
 
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
-export const CURRENT_DESKTOP_SCHEMA_VERSION = 9
+export const CURRENT_DESKTOP_SCHEMA_VERSION = 10
 let installed: MigrationRegistry | undefined
 
 function installKnownDonorAvatarColumn(db: import('better-sqlite3').Database): void {
@@ -90,11 +91,16 @@ export function getDesktopMigrationRegistry(): MigrationRegistry {
     const m08 = createM08Migration({ database: native,
       verifyKnownSchema: db => characterStateContinuityFingerprints.has(sqliteSchemaFingerprint(native(db)))
         && verifyM02CharacterIdentity(native(db)) })
-    installed = createMigrationRegistry([m00, m01, m02, m03, m04, m05, m06, m07, m08], [
+    for (const db of references) db.transaction(() => applyM09ChapterCharacterStateCache(db))()
+    const characterStateCacheSchemas = schemas(10), characterStateCacheFingerprints = new Set(characterStateCacheSchemas.map(item => item.fingerprint))
+    const m09 = createM09Migration({ database: native,
+      verifyKnownSchema: db => characterStateCacheFingerprints.has(sqliteSchemaFingerprint(native(db)))
+        && verifyM02CharacterIdentity(native(db)) })
+    installed = createMigrationRegistry([m00, m01, m02, m03, m04, m05, m06, m07, m08, m09], [
       ...sourceSchemas, ...baselineSchemas.map(schema => ({ ...schema, version: 0 })),
       ...baselineSchemas, ...generationSchemas, ...identitySchemas,
       ...reviewCycleSchemas, ...importEffectSchemas, ...characterAssetSchemas, ...mergeSnapshotSchemas,
-      ...characterStateSnapshotSchemas, ...characterStateContinuitySchemas,
+      ...characterStateSnapshotSchemas, ...characterStateContinuitySchemas, ...characterStateCacheSchemas,
     ])
     return installed
   } finally { reference.close(); donor.close() }

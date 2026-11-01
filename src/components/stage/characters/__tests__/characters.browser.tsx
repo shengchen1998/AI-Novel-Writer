@@ -88,7 +88,7 @@ beforeEach(async () => {
     if (channel === 'character-proposal:list-pending-finalized') return Array.from({ length: pendingDecisions }, (_, index) =>
       ({ proposalBatchId: `cpb-${index}`, revision: 1, finalizationId: `final-${index}` }))
     if (channel === 'finalized-character:list-state-candidates') return pendingStates.map(candidate => ({
-      draftId: 7, candidateKey: candidate.candidateKey, finalizationId: 'final-7',
+      draftId: candidate.source.draftId, candidateKey: candidate.candidateKey, finalizationId: candidate.source.finalizationId,
       characterId: candidate.characterId, characterName: candidate.characterName, field: candidate.field }))
     if (channel === 'finalized-character:read-state-candidate') {
       const { candidateKey } = args[0] as { candidateKey: string }
@@ -100,6 +100,7 @@ beforeEach(async () => {
       return { candidateKey, operationId: 'decision', payloadHash: 'd'.repeat(64), decision: 'accept', idempotent: false }
     }
     if (channel === 'finalized-character:read-state-continuity') return []
+    if (channel === 'finalized-character:read-state-cache') return { status: 'ready', reason: null, snapshotId: null, source: null }
     if (channel === 'character-avatar:read-batch') return { success: true, avatars: [] }
     if (channel === 'db:project-core-get') return null
     throw new Error(`未配置调用：${channel}`)
@@ -513,8 +514,9 @@ describe('角色名单', () => {
 
   it('章节状态先读摘要，点击后按角色读取基线、缺口、完整来源与证据，并切换英文文案', async () => {
     const source = { draftId: 7, finalizationId: 'final-1', chapterNumber: 1, contentHash: 'a'.repeat(64) }
+    pendingStates = [{ ...stateCandidate('s-physical', 'physicalState', '可能受伤'), source }]
     const summary = {
-      snapshotId: 'snapshot-1', source, chapterTitle: '北塔', snapshotHash: 'b'.repeat(64), createdAt: '2026-11-01 12:00:00',
+      snapshotId: 'snapshot-1', status: 'invalid', source, chapterTitle: '北塔', snapshotHash: 'b'.repeat(64), createdAt: '2026-11-01 12:00:00',
       baseline: { kind: 'roster', predecessor: null }, inputHash: 'c'.repeat(64), continuityGeneration: 0,
       character: { characterId: linzhou.characterId, displayNameSnapshot: '林舟', aliases: ['林舟'], updatedAtChapter: 1 },
     }
@@ -534,6 +536,9 @@ describe('角色名单', () => {
     invoke.mockImplementation(async (channel, ...args) => {
       if (channel === 'finalized-character:list-state-snapshots') return [summary]
       if (channel === 'finalized-character:read-state-snapshot') return { ...summary, character: { ...summary.character, fields } }
+      if (channel === 'finalized-character:read-state-cache') {
+        return { status: 'rebuild-required', reason: 'cas-conflict', snapshotId: 'snapshot-1', source }
+      }
       if (channel === 'finalized-character:read-state-continuity') return [
         { source, chapterTitle: '北塔', status: 'missing-snapshot' },
         { source: { ...source, draftId: 8, finalizationId: 'final-2', chapterNumber: 2 }, chapterTitle: '南桥',
@@ -565,6 +570,10 @@ describe('角色名单', () => {
     expect(host!.textContent).toContain('来源未知')
     expect(host!.textContent).toContain('已知时点：第 1 章')
     expect(host!.textContent).toContain('正文证据')
+    expect(host!.textContent).toContain('快照已失效')
+    expect(host!.textContent).toContain('缓存待重建')
+    expect(host!.textContent).toContain('待确认')
+    expect(host!.textContent).toContain('Legacy')
 
     await act(async () => useLocaleStore.setState({ locale: 'en-US' }))
     expect(host!.textContent).toContain('Chapter 2 is waiting for its predecessor')
@@ -574,11 +583,16 @@ describe('角色名单', () => {
     expect(host!.textContent).toContain('Unknown source')
     expect(host!.textContent).toContain('Known at chapter 1')
     expect(host!.textContent).toContain('Finalized prose evidence')
+    expect(host!.textContent).toContain('Invalid snapshot')
+    expect(host!.textContent).toContain('Cache rebuild required')
+    expect(host!.textContent).toContain('Pending confirmation')
+    expect(host!.textContent).toContain('Legacy')
   })
 
   it('同章定稿版本可用键盘切换，任意两版按需比较新增、变化、清空和未变化字段', async () => {
     const source1 = { draftId: 7, finalizationId: 'final-1', chapterNumber: 1, contentHash: 'a'.repeat(64) }
     const source2 = { draftId: 8, finalizationId: 'final-2', chapterNumber: 1, contentHash: 'b'.repeat(64) }
+    pendingStates = [{ ...stateCandidate('s-diff', 'physicalState', '可能康复'), source: source2, reason: 'legacy-protected' }]
     const makeSummary = (snapshotId: string, source: typeof source1, validity: string) => ({
       snapshotId, source, chapterTitle: '北塔', snapshotHash: 'c'.repeat(64), createdAt: '2026-11-01 12:00:00',
       baseline: { kind: 'roster', predecessor: null }, inputHash: 'd'.repeat(64), continuityGeneration: 0, validity,
@@ -658,7 +672,7 @@ describe('角色名单', () => {
     })
     await vi.waitFor(() => expect(host!.querySelector('[aria-label="版本字段差异"]')).toBeTruthy())
     const diff = host!.querySelector('[aria-label="版本字段差异"]')!
-    for (const label of ['新增', '变化', '已清空', '未变化', '已取代', '当前有效', '新增能力证据', '旧版伤势证据', '已知时点：第 1 章']) {
+    for (const label of ['新增', '变化', '已清空', '未变化', '已取代', '当前有效', '新增能力证据', '旧版伤势证据', '已知时点：第 1 章', '待确认', 'Legacy']) {
       expect(diff.textContent).toContain(label)
     }
     expect(invoke.mock.calls.find(([channel]) => channel === 'finalized-character:compare-state-snapshots')?.[1]).toEqual({
@@ -666,7 +680,7 @@ describe('角色名单', () => {
     })
 
     await act(async () => useLocaleStore.setState({ locale: 'en-US' }))
-    for (const label of ['Added', 'Changed', 'Cleared', 'Unchanged', 'Superseded', 'Currently valid']) {
+    for (const label of ['Added', 'Changed', 'Cleared', 'Unchanged', 'Superseded', 'Currently valid', 'Pending confirmation', 'Legacy']) {
       expect(diff.textContent).toContain(label)
     }
   })

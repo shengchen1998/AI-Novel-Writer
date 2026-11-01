@@ -221,6 +221,7 @@ export function registerGenerationController(options: {
   register('finalized-character:compare-state-snapshots', 1, (owner, request) =>
     owner.compareChapterCharacterStateSnapshots(request.beforeSnapshotId, request.afterSnapshotId, request.characterId))
   register('finalized-character:read-state-continuity', 0, owner => owner.readChapterCharacterStateContinuity())
+  register('finalized-character:read-state-cache', 0, owner => owner.readChapterCharacterStateCache())
   register('finalization-generation:read', 1, (owner, request) => owner.readFinalizationGeneration(request))
   register('finalization-generation:begin', 1, (owner, request) => owner.beginFinalizationGeneration(request))
   register('finalization-generation:execute', 1, (owner, request) => owner.executeFinalizationGeneration(request))

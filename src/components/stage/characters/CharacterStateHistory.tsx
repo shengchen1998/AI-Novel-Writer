@@ -5,6 +5,7 @@ import type {
   ChapterCharacterStateSnapshotDetail,
   ChapterCharacterStateSnapshotVersionSummary,
 } from '../../../shared/chapter-character-state-snapshot'
+import type { PendingFinalizedCharacterStateCandidateSummary } from '../../../shared/finalized-continuity'
 import { CHARACTER_STATE_FIELDS } from '../../editor/character-state-fields'
 import { Button } from '../../ui/Button'
 import CharacterStateContinuity from './CharacterStateContinuity'
@@ -13,6 +14,7 @@ import CharacterStateVersionComparison from './CharacterStateVersionComparison'
 export default function CharacterStateHistory({ characterId }: { characterId: string }) {
   const text = useLocaleStore(s => s.text)
   const [summaries, setSummaries] = useState<ChapterCharacterStateSnapshotVersionSummary[]>([])
+  const [pendingCandidates, setPendingCandidates] = useState<PendingFinalizedCharacterStateCandidateSummary[]>([])
   const [listStatus, setListStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [detail, setDetail] = useState<ChapterCharacterStateSnapshotDetail | null>(null)
   const [detailStatus, setDetailStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -26,6 +28,11 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
       setListStatus('ready')
     }).catch(() => {
       if (active) setListStatus('error')
+    })
+    void ipc.invoke('finalized-character:list-state-candidates').then(result => {
+      if (active) setPendingCandidates(result.filter(candidate => candidate.characterId === characterId))
+    }).catch(() => {
+      if (active) setPendingCandidates([])
     })
     return () => { active = false }
   }, [characterId, reload])
@@ -46,7 +53,7 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
   const sourceLabel = (kind: 'author' | 'derived' | 'legacy') => {
     if (kind === 'author') return text('作者输入', 'Author input')
     if (kind === 'derived') return text('定稿派生', 'Derived from finalized prose')
-    return text('来源未知', 'Unknown source')
+    return text('Legacy（来源未知）', 'Legacy · Unknown source')
   }
   const validityLabel = (validity: ChapterCharacterStateSnapshotVersionSummary['validity']) => {
     if (validity === 'valid') return text('当前有效', 'Currently valid')
@@ -96,7 +103,7 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
 
       <div className="cast-history-detail">
         {summaries.length > 1 && <CharacterStateVersionComparison key={summaries.map(summary => summary.snapshotId).join(':')}
-          characterId={characterId} summaries={summaries} />}
+          characterId={characterId} summaries={summaries} pendingCandidates={pendingCandidates} />}
         {detailStatus === 'idle' && summaries.length > 0 && <p>{text('选择一次定稿查看完整状态。', 'Choose a finalization to view its complete state.')}</p>}
         {detailStatus === 'loading' && <p role="status">{text('正在读取完整快照…', 'Loading the complete snapshot…')}</p>}
         {detailStatus === 'error' && <p role="alert">{text('完整快照这次没读出来，请重新选择。', 'The complete snapshot could not be loaded. Choose it again.')}</p>}
@@ -106,6 +113,12 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
               <h2>{text(`第 ${detail.source.chapterNumber} 章 · ${detail.chapterTitle}`, `Chapter ${detail.source.chapterNumber} · ${detail.chapterTitle}`)}</h2>
               <p>{detail.character.displayNameSnapshot}{detail.character.aliases.length > 0 ? ` · ${detail.character.aliases.join(' / ')}` : ''}</p>
             </header>
+            {detail.status === 'invalid' && (
+              <p className="run-note" data-tone="danger">{text(
+                '快照已失效，仅作历史查看，不作为当前派生状态。',
+                'Invalid snapshot: kept for history only and not used as current derived state.',
+              )}</p>
+            )}
             <section className="cast-history-source" aria-label={text('定稿来源', 'Finalization source')}>
               <h3>{text('定稿来源', 'Finalization source')}</h3>
               <dl>
@@ -138,6 +151,10 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
                       <span>{snapshotField.knownAtChapter === null
                         ? text('已知时点未知', 'Known time unknown')
                         : text(`已知时点：第 ${snapshotField.knownAtChapter} 章`, `Known at chapter ${snapshotField.knownAtChapter}`)}</span>
+                      {pendingCandidates.some(candidate => candidate.finalizationId === detail.source.finalizationId
+                        && candidate.characterId === characterId && candidate.field === field) && (
+                        <span>{text('待确认', 'Pending confirmation')}</span>
+                      )}
                     </p>
                     {snapshotField.provenance.kind === 'derived' && (
                       <p className="cast-history-field-source"><code>{snapshotField.provenance.source.finalizationId}</code></p>

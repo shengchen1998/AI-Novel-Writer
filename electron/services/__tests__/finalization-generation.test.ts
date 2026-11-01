@@ -190,26 +190,25 @@ it('恢复副本重新定稿：经验证origin epoch的derived字段被当前项
   return {f,run:()=>f.owner.commitFinalizationGeneration({handle:recovery.view.handle,artifact:f.artifactOf(receipt)})}
  }
  const denied=await commit()
- expect(denied.run).toThrow('FINALIZED_CHARACTER_SOURCE_CONFLICT')
+ expect(denied.run()).toMatchObject({success:true,stepKey:'character_cards',cacheStatus:'rebuild-required',cacheConflict:true})
  const restored=await commit(()=>'origin-project')
  expect(restored.run()).toMatchObject({success:true,stepKey:'character_cards',applied:1})
  expect(restored.f.db.prepare('SELECT cs_location FROM characters WHERE character_id=?').pluck().get(restored.f.characterId)).toBe('北塔')
 })
-it('未提交characters作者字段改变拒绝覆盖，保留artifact',async()=>{
+it('未提交characters作者字段改变时保留作者值与artifact并标记缓存待重建',async()=>{
  const f=await generated('character_cards')
  f.db.prepare('UPDATE characters SET cs_location=? WHERE character_id=?').run('作者新地点',f.characterId)
- expect(()=>f.owner.commitFinalizationGeneration(f.commitRequest)).toThrow()
+ expect(f.owner.commitFinalizationGeneration(f.commitRequest)).toMatchObject({cacheStatus:'rebuild-required',cacheConflict:true})
  expect(f.db.prepare('SELECT cs_location FROM characters WHERE character_id=?').pluck().get(f.characterId)).toBe('作者新地点')
  expect(f.owner.read(f.commitRequest.handle).artifacts).toHaveLength(1)
 })
-it('#484 生成期间字段被改：界面重试沿用冻结上下文仍拒写，重新定稿后才按新状态提交',async()=>{
+it('#484 生成期间字段被改：界面重试沿用冻结上下文仍待重建，重新定稿后才按新状态提交',async()=>{
  const f=await generated('character_cards')
  f.db.prepare('UPDATE characters SET cs_location=? WHERE character_id=?').run('作者新地点',f.characterId)
- expect(()=>f.owner.commitFinalizationGeneration(f.commitRequest)).toThrow('FINALIZED_CHARACTER_FIELD_CONFLICT')
+ expect(f.owner.commitFinalizationGeneration(f.commitRequest)).toMatchObject({cacheStatus:'rebuild-required',cacheConflict:true})
  const retry=f.owner.beginFinalizationGeneration({slot:f.slot,modelId:'synthetic'})
  expect(retry.view.handle).toEqual(f.commitRequest.handle)
- const replay=await f.owner.executeFinalizationGeneration({handle:retry.view.handle,retryOf:f.commitRequest.artifact})
- expect(()=>f.owner.commitFinalizationGeneration({handle:retry.view.handle,artifact:f.artifactOf(replay)})).toThrow('FINALIZED_CHARACTER_FIELD_CONFLICT')
+ expect(f.owner.commitFinalizationGeneration(f.commitRequest)).toMatchObject({cacheStatus:'rebuild-required',cacheConflict:true})
  expect(f.db.prepare('SELECT cs_location FROM characters WHERE character_id=?').pluck().get(f.characterId)).toBe('作者新地点')
  f.db.exec("INSERT INTO contents(id,body) VALUES(2,'新稿'); INSERT INTO drafts(id,chapter_number,version,status,content_id,word_count) VALUES(2,1,2,'draft',2,2)")
  FinalizationRepository.commit({finalizationId:'finalized-2',draftId:2,chapterNumber:1,chapterTitle:'北塔',content:prose,contentHash:textHash(prose),contentRevision:2,targetFileName:'第一章.txt'})
@@ -405,9 +404,9 @@ it.each(['same-project', 'authorized-origin', 'unknown-origin'] as const)('cards
  const request = { handle: recovery.view.handle, artifact: f.artifactOf(receipt) }
  // Filtering the prompt must not erase the old comparison baseline or bypass a concurrent author edit.
  f.db.prepare('UPDATE characters SET cs_recent_events=? WHERE character_id=?').run('作者运行中修改', f.characterId)
- expect(() => f.owner.commitFinalizationGeneration(request)).toThrow(origin === 'unknown-origin' ? 'FINALIZED_CHARACTER_SOURCE_CONFLICT' : 'FINALIZED_CHARACTER_FIELD_CONFLICT')
+ expect(f.owner.commitFinalizationGeneration(request)).toMatchObject({ cacheStatus: 'rebuild-required', cacheConflict: true })
  f.db.prepare('UPDATE characters SET cs_recent_events=? WHERE character_id=?').run(previous, f.characterId)
- if (origin !== 'unknown-origin') expect(f.owner.commitFinalizationGeneration(request)).toMatchObject({ applied: 1 })
+ expect(f.owner.commitFinalizationGeneration(request)).toMatchObject({ cacheStatus: 'rebuild-required', cacheConflict: true })
  expect(f.dispatch).toHaveBeenCalledTimes(1)
 })
 async function splitEvidenceRun(writingLanguage?:'en-US',replies:((characterId:string)=>unknown)[]=[]){
@@ -651,15 +650,14 @@ it('历史 finalization:1/2 的旧提示 hash 只回放原 receipt，不与新�
  expect(f.dispatch).toHaveBeenCalledTimes(4)
 })
 
-it('有效角色候选写入失败时显式重试仍只提交同一 artifact', async () => {
+it('有效角色缓存写入失败时保留快照并让显式重试沿用同一 artifact 与待重建回执', async () => {
  const f = await generated('character_cards')
  f.db.exec("CREATE TRIGGER reject_character BEFORE UPDATE OF cs_location ON characters BEGIN SELECT RAISE(ABORT,'synthetic-write-failure'); END")
- expect(() => f.owner.commitFinalizationGeneration(f.commitRequest)).toThrow('synthetic-write-failure')
- const replay = await f.owner.executeFinalizationGeneration({ handle: f.commitRequest.handle, retryOf: f.commitRequest.artifact })
- expect(replay.outcome.receipt?.visibleArtifact).toEqual(f.receipt.outcome.receipt?.visibleArtifact)
+ expect(f.owner.commitFinalizationGeneration(f.commitRequest)).toMatchObject({ cacheStatus: 'rebuild-required', cacheConflict: true })
+ expect(f.owner.commitFinalizationGeneration(f.commitRequest)).toMatchObject({ cacheStatus: 'rebuild-required', cacheConflict: true })
  expect(f.dispatch).toHaveBeenCalledTimes(1)
  f.db.exec('DROP TRIGGER reject_character')
- expect(f.owner.commitFinalizationGeneration(f.commitRequest)).toMatchObject({ applied: 1 })
+ expect(f.owner.commitFinalizationGeneration(f.commitRequest)).toMatchObject({ cacheStatus: 'rebuild-required', cacheConflict: true })
 })
 
 it('显式重试耗尽原 root 的时间预算后 begin 不得换根绕过', async () => {

@@ -665,7 +665,7 @@ describe('RunFinalizePostProcessCommand character-state persistence', () => {
     expect(CharacterRepository.getById(characterId)?.currentState).toMatchObject({
       keyItems: 'brass key',
     })
-    expect(CharacterRosterRepository.read().revision).toBe(1)
+    expect(CharacterRosterRepository.read().revision).toBe(2)
     const frozenSource = SummaryRepository.readFinalizedSource(7)
     if (frozenSource.status !== 'valid') throw new Error('expected valid finalized source')
     SummaryRepository.saveFinalizedContinuity({
@@ -723,14 +723,22 @@ describe('RunFinalizePostProcessCommand character-state persistence', () => {
     expect(nextChapterPrompt).not.toContain('finalized#2:evidence-not-locatable')
   })
 
-  it('rejects an older Chinese chapter retry after a newer character state is committed', async () => {
+  it('keeps the newer character state after an older Chinese chapter retry', async () => {
     workflowContext.writingLanguage = 'zh-CN'
     insertFinalizedDraft(7, 2)
     insertFinalizedDraft(8, 3)
     const chapterThreeDb = getProjectDb()!
+    chapterThreeDb.transaction(() => freezeFinalizedCharacterSnapshot(chapterThreeDb, { draftId: 7, finalizationId: 'finalization-7', chapterNumber: 2,
+      contentHash: createHash('sha256').update('Chapter 2 finalized content').digest('hex') }))()
+    const contextTwo = SummaryRepository.readFinalizedCharacterContext(7, { projectId: 'test', epoch: 'lease-test' })
+    SummaryRepository.saveFinalizedContinuity({ draftId: 7, chapterNumber: 2, chapterNotes: '第二章摘要', facts: [],
+      source: contextTwo.source, projectionGeneration: contextTwo.projectionGeneration })
+    SummaryRepository.commitFinalizedCharacterStates(contextTwo, { updates: [], unresolved: [] })
     chapterThreeDb.transaction(() => freezeFinalizedCharacterSnapshot(chapterThreeDb, { draftId: 8, finalizationId: 'finalization-8', chapterNumber: 3,
       contentHash: createHash('sha256').update('Chapter 3 finalized content').digest('hex') }))()
     const contextThree = SummaryRepository.readFinalizedCharacterContext(8, { projectId: 'test', epoch: 'lease-test' })
+    SummaryRepository.saveFinalizedContinuity({ draftId: 8, chapterNumber: 3, chapterNotes: '第三章摘要', facts: [],
+      source: contextThree.source, projectionGeneration: contextThree.projectionGeneration })
     SummaryRepository.commitFinalizedCharacterStates(contextThree, { updates: [{ characterId, currentState: { location: '新港', recentEvents: '第三章已经交出黄铜钥匙' },
       evidence: { start: 0, end: contextThree.content.length, text: contextThree.content } }], unresolved: [] })
     const chapterThree = { snapshot: CharacterRosterRepository.read() }
@@ -746,15 +754,12 @@ describe('RunFinalizePostProcessCommand character-state persistence', () => {
       }],
     })
 
-    const status = await command('第二章定稿：林岚准备交出黄铜钥匙。', {
+    const status = await command('Chapter 2 finalized content', {
       onlyFailed: true,
       stepKeys: ['character_cards'],
     }).execute({ step: {}, context: workflowContext, callbacks: callbacks() })
 
-    expect(status.steps.character_cards).toMatchObject({
-      ok: false,
-      error: expect.stringContaining('SOURCE_CONFLICT'),
-    })
+    expect(status.steps.character_cards).toMatchObject({ ok: true, error: undefined })
     expect(CharacterRosterRepository.read()).toEqual(chapterThree.snapshot)
     expect(CharacterRepository.getById(characterId)?.currentState).toMatchObject({
       location: '新港',
@@ -764,7 +769,7 @@ describe('RunFinalizePostProcessCommand character-state persistence', () => {
     })
   })
 
-  it('keeps a legal empty update successful without creating a roster revision', async () => {
+  it('keeps a legal empty update successful without carrying invalid derived state forward', async () => {
     const chineseChapter = [
       '头部事实：林岚抵达旧站。',
       '雨水冲刷石阶。'.repeat(1200),
@@ -778,7 +783,7 @@ describe('RunFinalizePostProcessCommand character-state persistence', () => {
 
     expect(observedCharacterPrompt).toContain(chineseChapter)
     expect(status.steps).toMatchObject({ chapter_notes: { ok: true }, character_cards: { ok: true, attemptCount: 1 } })
-    expect(CharacterRosterRepository.read().revision).toBe(1)
+    expect(CharacterRosterRepository.read().revision).toBe(2)
   })
 
   it('retains unknown character output for explicit approval without creating or merging a character', async () => {
@@ -790,7 +795,13 @@ describe('RunFinalizePostProcessCommand character-state persistence', () => {
       status: 'pending-approval',
       items: [expect.objectContaining({ fields: expect.objectContaining({ name: 'Zhou Yan' }) })],
     })
-    expect(CharacterRosterRepository.read()).toEqual(before)
+    const after = CharacterRosterRepository.read()
+    expect(after.revision).toBe(before.revision + 1)
+    expect(after.entries).toHaveLength(1)
+    expect(after.entries[0]).toMatchObject({
+      characterId, name: 'Lin Lan',
+      currentState: { location: '', recentEvents: '', keyItems: 'brass key', mentalState: 'alert', physicalState: 'tired', powerLevel: 'ordinary' },
+    })
     expect(getProjectDb()!.prepare('SELECT COUNT(*) FROM characters').pluck().get()).toBe(1)
     expect(commitRequests).toHaveLength(1)
   })
@@ -810,8 +821,8 @@ describe('RunFinalizePostProcessCommand character-state persistence', () => {
     changeFieldBeforeCommit = true
     cardResponse = JSON.stringify({ updates: [{ name: 'Lin Lan', currentState: { location: 'harbor' } }] })
     const status = await command('Lin Lan arrives at the harbor.').execute({ step: {}, context: workflowContext, callbacks: callbacks() })
-    expect(status.steps.character_cards).toMatchObject({ ok: false, error: expect.stringContaining('FIELD_CONFLICT') })
-    expect(commitRequests).toHaveLength(3)
+    expect(status.steps.character_cards).toMatchObject({ ok: true })
+    expect(commitRequests).toHaveLength(1)
     expect(commitRequests.every(request => JSON.stringify(request) === JSON.stringify(commitRequests[0]))).toBe(true)
     expect(useLLMStore.getState().generateStream).toHaveBeenCalledTimes(2)
     expect(CharacterRepository.getById(characterId)?.currentState?.location).toBe('作者后来设置')

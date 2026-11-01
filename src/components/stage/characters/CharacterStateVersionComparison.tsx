@@ -7,12 +7,14 @@ import type {
   ChapterCharacterStateSnapshotValidity,
   ChapterCharacterStateSnapshotVersionSummary,
 } from '../../../shared/chapter-character-state-snapshot'
+import type { PendingFinalizedCharacterStateCandidateSummary } from '../../../shared/finalized-continuity'
 import { CHARACTER_STATE_FIELDS } from '../../editor/character-state-fields'
 import { Button } from '../../ui/Button'
 
-export default function CharacterStateVersionComparison({ characterId, summaries }: {
+export default function CharacterStateVersionComparison({ characterId, summaries, pendingCandidates }: {
   characterId: string
   summaries: ChapterCharacterStateSnapshotVersionSummary[]
+  pendingCandidates: PendingFinalizedCharacterStateCandidateSummary[]
 }) {
   const text = useLocaleStore(s => s.text)
   const [beforeSnapshotId, setBeforeSnapshotId] = useState(summaries[0]?.snapshotId ?? '')
@@ -46,9 +48,9 @@ export default function CharacterStateVersionComparison({ characterId, summaries
   const sourceLabel = (kind: ChapterCharacterStateSnapshotField['provenance']['kind']) => {
     if (kind === 'author') return text('作者输入', 'Author input')
     if (kind === 'derived') return text('定稿派生', 'Derived from finalized prose')
-    return text('来源未知', 'Unknown source')
+    return text('Legacy（来源未知）', 'Legacy · Unknown source')
   }
-  const renderField = (label: string, field: ChapterCharacterStateSnapshotField) => (
+  const renderField = (label: string, field: ChapterCharacterStateSnapshotField, finalizationId: string) => (
     <div className="cast-history-diff-side">
       <h4>{label}</h4>
       <p className="cast-history-value">{field.value || '—'}</p>
@@ -57,6 +59,10 @@ export default function CharacterStateVersionComparison({ characterId, summaries
         <span>{field.knownAtChapter === null
           ? text('已知时点未知', 'Known time unknown')
           : text(`已知时点：第 ${field.knownAtChapter} 章`, `Known at chapter ${field.knownAtChapter}`)}</span>
+        {pendingCandidates.some(candidate => candidate.finalizationId === finalizationId
+          && candidate.characterId === characterId && candidate.field === field.field) && (
+          <span>{text('待确认', 'Pending confirmation')}</span>
+        )}
       </p>
       {field.provenance.kind === 'derived' && (
         <p className="cast-history-field-source"><code>{field.provenance.source.finalizationId}</code></p>
@@ -113,8 +119,8 @@ export default function CharacterStateVersionComparison({ characterId, summaries
                   aria-label={text(`${zh}差异`, `${en} difference`)}>
                   <h3>{text(zh, en)} · {changeLabel}</h3>
                   <div className="cast-history-diff-sides">
-                    {renderField(text('起点', 'From'), fieldDiff.before)}
-                    {renderField(text('终点', 'To'), fieldDiff.after)}
+                    {renderField(text('起点', 'From'), fieldDiff.before, diff.before.source.finalizationId)}
+                    {renderField(text('终点', 'To'), fieldDiff.after, diff.after.source.finalizationId)}
                   </div>
                 </section>
               )

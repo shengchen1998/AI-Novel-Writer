@@ -34,6 +34,14 @@ export interface ChapterCharacterStateSnapshotBaseline {
   characters: ChapterCharacterStateSnapshotCharacter[]
   inputHash: string
   continuityGeneration: number
+  cacheRevision: number
+}
+
+export interface ChapterCharacterStateCacheStatus {
+  status: 'ready' | 'rebuild-required' | 'invalid'
+  reason: 'cas-conflict' | 'continuity-incomplete' | 'not-established' | null
+  snapshotId: string | null
+  source: FinalizedSourceIdentity | null
 }
 
 export function chapterCharacterStatePromptCards(baseline: ChapterCharacterStateSnapshotBaseline) {
@@ -47,11 +55,12 @@ export function chapterCharacterStatePromptCards(baseline: ChapterCharacterState
 
 export interface ChapterCharacterStateSnapshotSummary {
   snapshotId: string
+  status: 'valid' | 'invalid'
   source: FinalizedSourceIdentity
   chapterTitle: string
   snapshotHash: string
   createdAt: string
-  baseline: Omit<ChapterCharacterStateSnapshotBaseline, 'characters' | 'inputHash' | 'continuityGeneration'>
+  baseline: Omit<ChapterCharacterStateSnapshotBaseline, 'characters' | 'inputHash' | 'continuityGeneration' | 'cacheRevision'>
   inputHash: string | null
   continuityGeneration: number | null
   character: ChapterCharacterStateSnapshotCharacterSummary

@@ -164,6 +164,8 @@ export interface FinalizedCharacterStateCommitReceipt {
   applied: number
   unchanged: number
   candidates: FinalizedCharacterStateCandidate[]
+  cacheStatus?: 'ready' | 'rebuild-required' | 'invalid'
+  cacheConflict?: boolean
 }
 
 export class FinalizedCharacterEvidenceError extends Error {

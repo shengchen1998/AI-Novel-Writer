@@ -637,7 +637,7 @@ describe('portable project export service', { timeout: 20_000 }, () => {
     })
     const portable = new Database(path.join(unpacked.stagingPath, 'project.db'), { readonly: true })
     try {
-      expect(portable.pragma('user_version', { simple: true })).toBe(9)
+      expect(portable.pragma('user_version', { simple: true })).toBe(10)
       expect(portable.prepare('SELECT COUNT(*) FROM review_cycle_merges').pluck().get()).toBe(0)
       expect(portable.prepare('SELECT body FROM contents WHERE id=1').pluck().get()).toBe(seeded.body)
       expect(portable.prepare('SELECT relation FROM character_relationships').pluck().get()).toBe('盟友')
@@ -677,7 +677,7 @@ describe('portable project export service', { timeout: 20_000 }, () => {
     const restoredStorage = path.join(targetProjectRoot, '.ai-novel')
     const restored = new Database(path.join(restoredStorage, 'project.db'), { readonly: true })
     try {
-      expect(restored.pragma('user_version', { simple: true })).toBe(9)
+      expect(restored.pragma('user_version', { simple: true })).toBe(10)
       expect(restored.prepare('SELECT avatar FROM characters').pluck().all()).toEqual(['', ''])
       expect(restored.prepare('SELECT body FROM contents WHERE id=1').pluck().get()).toBe(seeded.body)
       const avatarPath = restored.prepare('SELECT relative_path FROM character_avatar_assets').pluck().get() as string

@@ -44,7 +44,7 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
   const byteSize = 512 * 1024 * 1024
   return {
     formatVersion: 1,
-    sourceSchemaVersion: 9,
+    sourceSchemaVersion: 10,
     originProjectId: 'origin-project',
     snapshotGeneration: 'generation-0001',
     createdAt: '2026-09-20T00:00:00.000Z',
@@ -66,16 +66,16 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
-describe('portable v9 field policy', () => {
-  it('与实际当前registry双向精确匹配54表508字段，并包含两个lazy表', () => {
+describe('portable v10 field policy', () => {
+  it('与实际当前registry双向精确匹配55表516字段，并包含两个lazy表', () => {
     const { database } = openCurrent()
-    expect(database.pragma('user_version', { simple: true })).toBe(9)
+    expect(database.pragma('user_version', { simple: true })).toBe(10)
     const tables = database.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%'")
       .all() as Array<{ name: string }>
     const fieldCount = tables.reduce((count, table) => count
       + (database.prepare(`PRAGMA table_info("${table.name}")`).all() as unknown[]).length, 0)
-    expect({ tables: tables.length, fields: fieldCount }).toEqual({ tables: 54, fields: 508 })
-    expect(assertPortableSourceSchema(database)).toEqual({ tables: 54, fields: 508 })
+    expect({ tables: tables.length, fields: fieldCount }).toEqual({ tables: 55, fields: 516 })
+    expect(assertPortableSourceSchema(database)).toEqual({ tables: 55, fields: 516 })
     expect(getPortableFieldPolicy('review_cycle_merges', 'cycle_id').disposition).toBe('historical-nonreplayable')
     expect(getPortableFieldPolicy('review_cycle_merges', 'body').disposition).toBe('historical-nonreplayable')
     expect(getPortableFieldPolicy('chapter_character_state_snapshot_fields', 'evidence_json').disposition).toBe('historical-nonreplayable')
@@ -83,7 +83,7 @@ describe('portable v9 field policy', () => {
     expect(listPortableFieldPolicyKeys()).toContain('blueprint_character_sync_operations.operation_id')
   })
 
-  it('把签署S01基线35表356字段逐项投影，并精确增加M01-M05的15表/123字段、M06的1表/2字段及M07/M08的3表/27字段', () => {
+  it('把签署S01基线35表356字段逐项投影，并精确增加M01-M05的15表/123字段、M06的1表/2字段、M07/M08的3表/27字段及M09的1表/8字段', () => {
     const signed = JSON.parse(fs.readFileSync(path.resolve(
       'docs/research/novel-quality-modernization/s01-storage-contract.json'), 'utf8')) as {
       fieldDispositions: Array<{ table: string; field: string; portableDisposition: string }>
@@ -105,7 +105,7 @@ describe('portable v9 field policy', () => {
     const baseline = new Set(signed.fieldDispositions.map(field => `${field.table}.${field.field}`))
     const baselineTables = new Set(signed.fieldDispositions.map(field => field.table))
     const added = listPortableFieldPolicyKeys().filter(key => !baseline.has(key))
-    expect(added).toHaveLength(153)
+    expect(added).toHaveLength(161)
     expect(getPortableFieldPolicy('characters', 'avatar')).toMatchObject({
       origin: 'registered-donor', disposition: 'exclude-machine-authority', signedDisposition: null,
     })
@@ -122,6 +122,8 @@ describe('portable v9 field policy', () => {
     ])
     expect(listPortableFieldPolicyKeys().filter(key => getPortableFieldPolicy(
       ...key.split('.') as [string, string]).origin === 'm07-delta')).toHaveLength(27)
+    expect(listPortableFieldPolicyKeys().filter(key => getPortableFieldPolicy(
+      ...key.split('.') as [string, string]).origin === 'm09-delta')).toHaveLength(8)
   })
 
   it('机器权限、执行历史、未知nested与M05头像采用不同的fail-closed处置', () => {
@@ -147,7 +149,7 @@ describe('portable v9 field policy', () => {
         if (mode === 'extra-table') mutate.exec('CREATE TABLE future_portable_data(id TEXT)')
         if (mode === 'extra-field') mutate.exec('ALTER TABLE contents ADD COLUMN future_payload TEXT')
         if (mode === 'unregistered-avatar') mutate.exec('ALTER TABLE characters ADD COLUMN avatar TEXT')
-        if (mode === 'higher-version') mutate.pragma('user_version = 10')
+        if (mode === 'higher-version') mutate.pragma('user_version = 11')
         if (mode === 'lower-version') mutate.pragma('user_version = 5')
         if (mode === 'legacy-v6') {
           mutate.exec('DROP TABLE review_cycle_merges')
@@ -162,7 +164,7 @@ describe('portable v9 field policy', () => {
     },
   )
 
-  it('同表同字段但删除index的v9 DDL fork被registry fingerprint拒绝', () => {
+  it('同表同字段但删除index的v10 DDL fork被registry fingerprint拒绝', () => {
     const project = fixture()
     const mutate = new Database(project.databasePath)
     try { mutate.exec('DROP INDEX idx_character_avatar_revision') } finally { mutate.close() }
@@ -174,7 +176,7 @@ describe('portable v9 field policy', () => {
         .all() as Array<{ name: string }>
       const fields = tables.reduce((count, table) => count
         + (database.prepare(`PRAGMA table_info("${table.name}")`).all() as unknown[]).length, 0)
-      expect({ tables: tables.length, fields }).toEqual({ tables: 54, fields: 508 })
+      expect({ tables: tables.length, fields }).toEqual({ tables: 55, fields: 516 })
       expect(() => assertPortableSourceSchema(database)).toThrow('PORTABLE_SCHEMA_UNSUPPORTED')
     } finally { database.close() }
     expect(fs.readFileSync(project.databasePath)).toEqual(before)
@@ -265,7 +267,7 @@ describe('portable manifest v1', () => {
   })
 
   it('拒绝未知格式、非法hash、非安全整数和声明总量不符', () => {
-    expect(() => parsePortableProjectManifest(manifest({ sourceSchemaVersion: 10 }))).toThrow('PORTABLE_SCHEMA_UNSUPPORTED')
+    expect(() => parsePortableProjectManifest(manifest({ sourceSchemaVersion: 11 }))).toThrow('PORTABLE_SCHEMA_UNSUPPORTED')
     expect(() => parsePortableProjectManifest(manifest({ sourceSchemaVersion: 6 }))).toThrow('PORTABLE_SCHEMA_UNSUPPORTED')
     expect(() => parsePortableProjectManifest(manifest({ entries: [{
       path: '正文/a.txt', byteSize: 1, sha256: 'A'.repeat(64), disposition: 'author-content',

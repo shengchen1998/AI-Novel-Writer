@@ -138,6 +138,8 @@ beforeEach(async () => {
     if (channel === 'db:blueprint-get-all') return []
     if (channel === 'db:draft-list') return []
     // 运行侧页读恢复项：这里都没有。
+    if (channel === 'finalized-character:read-state-continuity') return []
+    if (channel === 'finalized-character:read-state-cache') return { status: 'ready', reason: null, snapshotId: null, source: null }
     if (channel === 'generation:list-recovery') return { planning: [], editors: [], reviews: [], batches: [], drafts: [], partial: false }
     if (['db:recovery-candidate-list', 'generation:list', 'skills:list-user'].includes(channel)) return []
     if (channel === 'fs:check-exists') return false

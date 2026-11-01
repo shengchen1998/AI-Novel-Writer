@@ -29,7 +29,7 @@ describe('installed M08 lane', () => {
     const db = fixture()
     try {
       const result = migrateSchema(new SqliteSchemaAdapter(db), getDesktopMigrationRegistry(), 9)
-      expect(CURRENT_DESKTOP_SCHEMA_VERSION).toBe(9)
+      expect(CURRENT_DESKTOP_SCHEMA_VERSION).toBe(10)
       expect(result.completedSteps).toEqual(['M08'])
       expect(db.prepare('SELECT body FROM contents').pluck().get()).toBe('既有正文')
       expect(db.prepare(`SELECT snapshot_hash,predecessor_snapshot_id,predecessor_hash,input_hash,continuity_generation

@@ -26,7 +26,7 @@ import {
   type CharacterStateTextField,
   type CharacterStateFieldProvenance,
 } from '../../src/shared/character-roster'
-import { decideDerivedPatch, type CharacterFieldSnapshot, type DerivedSourceOrder } from '../../src/shared/character-identity'
+import { type CharacterFieldSnapshot, type DerivedSourceOrder } from '../../src/shared/character-identity'
 import { parseFinalizedCharacterStateResponse } from '../../src/shared/finalized-continuity'
 import { hasCharacterIdentitySchema } from './character-repository'
 import { refreshCharacterStateProjection } from './character-roster-repository'
@@ -34,6 +34,7 @@ import type { ProjectEpoch } from '../../src/shared/source-ref'
 import { RECEIPTED_DRAFT_STATUS_SQL } from '../../src/shared/draft-status'
 import { ChapterCharacterStateSnapshotRepository } from './chapter-character-state-snapshot-repository'
 import type { ChapterCharacterStateSnapshotBaseline } from '../../src/shared/chapter-character-state-snapshot'
+import { refreshChapterCharacterStateCache } from '../services/chapter-character-state-cache'
 
 const FACT_CATEGORIES = new Set(['character-state', 'timeline', 'open-thread', 'plot'])
 const CHARACTER_STATE_FIELDS = new Set<string>(CHARACTER_STATE_TEXT_FIELDS)
@@ -422,12 +423,11 @@ export class SummaryRepository {
     })()
   }
 
-  /** originProjectId must come from readPortableCurrentAuthority for this project; it only lets origin-epoch derived fields advance. */
   static commitFinalizedCharacterStates(context: FinalizedCharacterContext, response: FinalizedCharacterStateResponse, database = getProjectDb(),
     originProjectId?: string, stateBaseline?: ChapterCharacterStateSnapshotBaseline): FinalizedCharacterStateCommitReceipt {
     if (!database) throw new Error('PROJECT_NOT_OPEN')
     const db = database
-    return db.transaction(() => {
+    const prepared = db.transaction(() => {
       const current = SummaryRepository.readFinalizedCharacterContext(context.source.draftId, context, db)
       const identity = (value: FinalizedCharacterContext) => ({ source: value.source, content: value.content, projectionGeneration: value.projectionGeneration,
         identityRevision: value.identityRevision, identityStatus: value.identityStatus, sourceOrder: value.sourceOrder,
@@ -436,46 +436,41 @@ export class SummaryRepository {
         field.characterId !== character.characterId || field.projectId !== context.projectId || field.epoch !== context.epoch))) throw new Error('FINALIZED_CHARACTER_CONTEXT_CHANGED')
       const verified = parseFinalizedCharacterStateResponse(JSON.stringify({ updates: response.updates }), context)
       if (verified.unresolved.length) throw new Error('FINALIZED_CHARACTER_IDENTITY_REQUIRED')
+      const baseline = stateBaseline ?? ChapterCharacterStateSnapshotRepository.captureBaseline(context, db) ?? undefined
+      const snapshotId = ChapterCharacterStateSnapshotRepository.appendInitial(context, verified.updates, db, baseline)
       const receipt: FinalizedCharacterStateCommitReceipt = { applied: 0, unchanged: 0, candidates: [] }
       for (const update of verified.updates) {
         const captured = context.characters.find(item => item.characterId === update.characterId)!
+        const baselineCharacter = baseline?.characters.find(item => item.characterId === update.characterId)
         const currentCharacter = current.characters.find(item => item.characterId === update.characterId)!
-        const row = db.prepare('SELECT cs_provenance FROM characters WHERE character_id=? AND retired=0').get(update.characterId) as { cs_provenance: string }
-        const provenance = JSON.parse(row.cs_provenance || '{}') as Record<string, unknown>
-        let changed = false
         for (const field of CHARACTER_STATE_TEXT_FIELDS) {
           if (!Object.hasOwn(update.currentState, field)) continue
-          const base = captured.fields.find(item => item.field === field), actual = currentCharacter.fields.find(item => item.field === field)!
-          if (!base || base.valueHash !== sha256(base.value)) throw new Error('FINALIZED_CHARACTER_CONTEXT_CHANGED')
+          const capturedField = captured.fields.find(item => item.field === field)
+          const base = baselineCharacter?.fields.find(item => item.field === field) ?? capturedField
+          const actual = currentCharacter.fields.find(item => item.field === field)!
+          if (!capturedField || capturedField.valueHash !== sha256(capturedField.value) || !base) throw new Error('FINALIZED_CHARACTER_CONTEXT_CHANGED')
           const value = update.currentState[field]!
-          const decision = decideDerivedPatch(actual, { projectId: context.projectId, epoch: context.epoch, characterId: update.characterId, field, value, valueHash: sha256(value),
-            baseFieldRevision: base.revision, baseValueHash: base.valueHash, baseProvenance: base.provenance,
-            source: context.source, sourceOrder: context.sourceOrder }, { source: current.source, order: current.sourceOrder, originProjectId })
-          if (decision === 'source-conflict') throw new Error('FINALIZED_CHARACTER_SOURCE_CONFLICT')
-          if (decision === 'field-conflict') throw new Error('FINALIZED_CHARACTER_FIELD_CONFLICT')
-          if (decision === 'already-applied') { receipt.unchanged++; continue }
-          if (decision === 'proposal-required') {
-            if (value === actual.value) { receipt.unchanged++; continue }
-            receipt.candidates.push({ candidateKey: characterStateCandidateKey(context.source, update.characterId, field, value), source: structuredClone(context.source),
-              expectedFieldRevision: actual.revision, expectedFieldValueHash: actual.valueHash,
-              characterId: update.characterId, characterName: captured.displayNameSnapshot, displayName: captured.displayNameSnapshot,
-              selectionKey: `state:${update.characterId}:${field}`, field, value, evidence: update.evidence, rawValue: structuredClone(update),
-              reason: actual.provenance.kind === 'author' ? 'author-protected' : 'legacy-protected' })
-            continue
-          }
-          db.prepare(`UPDATE characters SET ${STATE_COLUMNS[field]}=? WHERE character_id=? AND retired=0`).run(value, update.characterId)
-          provenance[field] = { kind: 'derived', source: structuredClone(context.source), revision: actual.revision + 1, sourceOrder: structuredClone(context.sourceOrder) }
-          receipt.applied++; changed = true
+          if (value === actual.value || value === base.value) { receipt.unchanged++; continue }
+          if (base.provenance.kind !== 'author' && (base.provenance.kind !== 'legacy' || base.value === '')) continue
+          receipt.candidates.push({ candidateKey: characterStateCandidateKey(context.source, update.characterId, field, value), source: structuredClone(context.source),
+            expectedFieldRevision: actual.revision, expectedFieldValueHash: actual.valueHash,
+            characterId: update.characterId, characterName: captured.displayNameSnapshot, displayName: captured.displayNameSnapshot,
+            selectionKey: `state:${update.characterId}:${field}`, field, value, evidence: update.evidence, rawValue: structuredClone(update),
+            reason: actual.provenance.kind === 'author' ? 'author-protected' : 'legacy-protected' })
         }
-        if (changed) db.prepare("UPDATE characters SET cs_provenance=?,cs_updated_at_chapter=MAX(COALESCE(cs_updated_at_chapter,0),?),updated_at=datetime('now') WHERE character_id=?")
-          .run(JSON.stringify(provenance), context.source.chapterNumber, update.characterId)
       }
       if (receipt.candidates.length) SummaryRepository.saveFinalizedCharacterStateCandidates({ draftId: context.source.draftId, chapterNumber: context.source.chapterNumber,
         projectionGeneration: context.projectionGeneration, source: context.source, candidates: receipt.candidates }, db)
-      if (receipt.applied) refreshCharacterStateProjection(db)
-      ChapterCharacterStateSnapshotRepository.appendInitial(context, verified.updates, db, stateBaseline)
-      return receipt
+      return { receipt, snapshotId, baseline }
     }).immediate()
+    let cache: ReturnType<typeof refreshChapterCharacterStateCache>
+    try {
+      cache = refreshChapterCharacterStateCache(db, context, prepared.baseline, prepared.snapshotId, originProjectId)
+    } catch {
+      db.transaction(() => ChapterCharacterStateSnapshotRepository.markCacheRebuildRequired(db, prepared.snapshotId, 'cas-conflict')).immediate()
+      cache = { applied: 0, unchanged: 0, cacheStatus: 'rebuild-required', cacheConflict: true }
+    }
+    return { ...prepared.receipt, ...cache, unchanged: prepared.receipt.unchanged + cache.unchanged }
   }
 
   static listPendingFinalizedCharacterStateCandidates(database = getProjectDb()): PendingFinalizedCharacterStateCandidateSummary[] {

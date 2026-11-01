@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { isFinalizedSourceIdentity } from '../../src/shared/source-ref'
 import { CHARACTER_STATE_TEXT_FIELDS, type CharacterStateTextField } from '../../src/shared/character-roster'
 import type { FinalizedSourceIdentity } from '../../src/shared/finalized-continuity'
+import { ChapterCharacterStateSnapshotRepository } from '../repositories/chapter-character-state-snapshot-repository'
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const stable = (value: unknown) => JSON.stringify(value)
@@ -13,6 +14,8 @@ const characterStateColumns: Record<CharacterStateTextField, string> = {
     mentalState: 'cs_mental_state', keyItems: 'cs_key_items', recentEvents: 'cs_recent_events',
 };
 export function currentCharacterProjection(db: Database.Database, projectId: string, originProjectId?: string): Record<string, unknown>[] {
+    const cacheReady = !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chapter_character_state_cache_meta'").get()
+        || ChapterCharacterStateSnapshotRepository.readCacheStatus(db).status === 'ready';
     const watermark = db.prepare("SELECT generation,stale_from_chapter AS staleFromChapter FROM continuity_projection_meta WHERE id='main'").get() as {
         generation: number; staleFromChapter: number | null;
     };
@@ -68,7 +71,7 @@ export function currentCharacterProjection(db: Database.Database, projectId: str
                         (source as FinalizedSourceIdentity).draftId, (source as FinalizedSourceIdentity).finalizationId,
                         (source as FinalizedSourceIdentity).chapterNumber, (source as FinalizedSourceIdentity).contentHash,
                     ])) : undefined;
-                    trusted = keys.join() === 'kind,revision,source,sourceOrder' && Number.isSafeInteger(value.revision) && Number(value.revision) > 0
+                    trusted = cacheReady && keys.join() === 'kind,revision,source,sourceOrder' && Number.isSafeInteger(value.revision) && Number(value.revision) > 0
                         && Boolean(proof && order && typeof order === 'object' && !Array.isArray(order)
                             && Object.keys(order).sort().join() === 'authoritativeFinalizationRevision,chapterNumber,continuityEpoch'
                             && (order as Record<string, unknown>).chapterNumber === (source as FinalizedSourceIdentity).chapterNumber
