@@ -42,6 +42,7 @@ class FakeWindow {
   readonly listeners = new Map<string, (event: { preventDefault: () => void }) => void>()
   readonly webContents = {
     isDestroyed: vi.fn(() => false),
+    isCrashed: vi.fn(() => false),
     isLoadingMainFrame: vi.fn(() => false),
     send: vi.fn(),
   }
@@ -185,6 +186,17 @@ describe('native window close guard', () => {
   it('allows a clean pre-render window to close without waiting for unavailable renderer state', () => {
     const win = new FakeWindow()
     win.webContents.isLoadingMainFrame.mockReturnValue(true)
+    installWindowCloseGuard(win as never)
+
+    win.close()
+
+    expect(win.destroyed).toBe(true)
+    expect(win.webContents.send).not.toHaveBeenCalled()
+  })
+
+  it('allows a crashed renderer window to close without waiting for a response', () => {
+    const win = new FakeWindow()
+    win.webContents.isCrashed.mockReturnValue(true)
     installWindowCloseGuard(win as never)
 
     win.close()
