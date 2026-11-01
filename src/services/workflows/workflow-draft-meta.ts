@@ -2,6 +2,7 @@ import { formatResourceUri } from '../../shared/project-paths'
 import { canonicalResourceUri, parseResourceUri } from '../../shared/project-paths'
 import type { DraftMeta } from '../draft-index'
 import type { DraftStatus } from '../../shared/draft-status'
+import type { DraftSource } from '../../shared/draft-source'
 import type { ProjectSessionContext } from '../../shared/ipc-channels'
 import { ipc } from '../ipc-client'
 
@@ -30,7 +31,7 @@ export async function readWorkflowDraftMeta(
     return {
       ...dbMeta,
       status: dbMeta.status as DraftStatus,
-      source: dbMeta.source as 'write' | 'rewrite',
+      source: dbMeta.source as DraftSource,
       fileName: `draft_v${dbMeta.version}.md`,
       filePath: formatResourceUri({ kind: 'draft', id: dbMeta.id }),
     } as DraftMeta

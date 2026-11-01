@@ -175,6 +175,16 @@ describe('打开作品的落点不等审稿与修稿记录：落到哪个阶段�
     expect(focusChapter(withProse)?.number).toBe(2)
   })
 
+  it.each(['write', 'rewrite'] as const)('空白 %s 工作稿不开启正文阶段，也不改变旧的自动聚焦', source => {
+    const empty = { ...draft(14, 4, 'draft'), source, wordCount: 0 }
+    const chapters = deriveChapters({ ...work, drafts: { 4: [empty] } })
+    const stages = deriveStages({ ...work, drafts: { 4: [empty] } }, chapters)
+
+    expect(chapters.find(row => row.number === 4)?.phase).toBe('draft')
+    expect(stages.at(-1)?.progress).toEqual({ state: 'todo' })
+    expect(focusChapter(chapters)?.number).toBe(1)
+  })
+
   it('一章有定稿、之后又新建了一份空草稿：仍算写过；没有蓝图、大纲没写完也落在这一章的正文', () => {
     const emptyAfterFinal = [draft(11, 1, 'finalized'), { ...draft(12, 1, 'draft'), version: 2, wordCount: 0 }]
     const open = (drafts: WorkFacts['drafts']) => {
