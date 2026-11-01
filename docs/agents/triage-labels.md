@@ -8,4 +8,6 @@
 | `ready-for-human` | `ready-for-human` | 必须由人工完成或确认 |
 | `wontfix` | `wontfix` | 不纳入实现 |
 
+当 Skill 提到某个 canonical 角色时，使用表中对应的 GitHub 标签。
+
 每个已完成 triage 的 Issue 应同时具有一个类别标签（`bug` 或 `enhancement`）和一个状态标签。不得同时保留多个状态标签。
