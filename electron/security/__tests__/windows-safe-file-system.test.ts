@@ -138,6 +138,16 @@ describe('Darwin handle-bound secure file system', () => {
     await expect(safeFileSystem.exists(capability(selectedRoot, 'chapter.txt')))
       .rejects.toThrow('SECURE_FS_HELPER_UNAVAILABLE')
   })
+
+  it.runIf(process.platform === 'darwin')('keeps the source helper fallback available in Darwin development mode', async () => {
+    const fixture = fixtureRoot()
+    const selectedRoot = path.join(fixture, 'selected')
+    fs.mkdirSync(selectedRoot)
+
+    const safeFileSystem = createWindowsSafeFileSystem()
+
+    await expect(safeFileSystem.exists(capability(selectedRoot, 'chapter.txt'))).resolves.toBe(false)
+  })
 })
 
 describe.runIf(process.platform === 'win32')('Windows handle-bound secure file system', () => {

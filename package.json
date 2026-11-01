@@ -12,6 +12,7 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "postinstall": "node node_modules/electron/install.js",
+    "predev": "node scripts/prepare-darwin-secure-file-system.mjs",
     "dev": "vite",
     "clean:build": "node scripts/clean-build-output.mjs",
     "typecheck": "tsc --noEmit",
