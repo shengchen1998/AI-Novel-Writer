@@ -148,6 +148,39 @@ it('当前投影提供预检事实，失效或 legacy 投影只保留同一原�
   expect(f.capture().history[0]!.projection).toBeUndefined()
 })
 
+it('早章重定稿后审稿保留作者事实与新定稿原文，排除失效派生状态和旧投影', () => {
+  const f = fixture(), oldProse = '第一章旧定稿原文。', revised = '第一章新定稿原文。', derived = '失效派生摘要'
+  f.db.prepare('INSERT INTO contents(id,body) VALUES(2,?)').run(oldProse)
+  f.db.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id) VALUES(2,1,1,'draft',2)").run()
+  f.db.prepare('INSERT INTO characters(character_id,name,cs_updated_at_chapter,cs_location,cs_physical_state,cs_provenance) VALUES(?,?,1,?,?,?)')
+    .run('lin', '林岚', '作者地点', '失效伤势', JSON.stringify({
+      location: { kind: 'author', chapterNumber: 1 },
+      physicalState: { kind: 'derived', source: { draftId: 2, finalizationId: 'old-final', chapterNumber: 1, contentHash: textHash(oldProse) } },
+    }))
+  FinalizationRepository.commit({ finalizationId: 'old-final', draftId: 2, chapterNumber: 1,
+    chapterTitle: '旧章', content: oldProse, contentHash: textHash(oldProse), contentRevision: 1, targetFileName: 'old.txt' })
+  SummaryRepository.saveFinalizedContinuity({ draftId: 2, chapterNumber: 1, chapterNotes: derived,
+    projectionGeneration: 0, source: { draftId: 2, chapterNumber: 1, finalizationId: 'old-final', contentHash: textHash(oldProse) },
+    facts: [{ category: 'character-state', entities: ['林岚'], statement: derived, evidence: oldProse, sourceChapter: 1,
+      characterRefs: [{ characterId: 'lin', displayNameSnapshot: '林岚' }] }] })
+  expect(f.capture().history[0]?.projection?.sourceStatus).toBe('current')
+
+  f.db.prepare('INSERT INTO contents(id,body) VALUES(3,?)').run(revised)
+  f.db.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id) VALUES(3,1,2,'draft',3)").run()
+  FinalizationRepository.commit({ finalizationId: 'new-final', draftId: 3, chapterNumber: 1,
+    chapterTitle: '新章', content: revised, contentHash: textHash(revised), contentRevision: 1, targetFileName: 'new.txt' })
+  const degraded = f.capture()
+  expect(degraded.characterStates).toContain('作者地点')
+  expect(degraded.characterStates).not.toContain('失效伤势')
+  expect(degraded.history).toEqual([expect.objectContaining({ content: revised,
+    source: { draftId: 3, finalizationId: 'new-final', chapterNumber: 1, contentHash: textHash(revised) } })])
+  expect(degraded.history[0]?.projection).toBeUndefined()
+  expect(degraded.preflightFindings).toEqual([])
+  expect(JSON.stringify(degraded)).not.toContain(derived)
+  expect(JSON.stringify(degraded)).not.toContain(oldProse)
+  expect(JSON.stringify(degraded)).not.toContain('chapter-character-state:')
+})
+
 it('accepts a reviewed current draft and same-hash archived predecessor, but refuses changed history or newer authority', () => {
  const f=fixture()
  f.db.exec("UPDATE drafts SET status='reviewed' WHERE id=1; INSERT INTO contents(id,body) VALUES(2,'前驱正文'); INSERT INTO drafts(id,chapter_number,version,status,content_id) VALUES(2,1,1,'archived',2)")

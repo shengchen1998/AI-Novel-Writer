@@ -35,8 +35,16 @@ export default function CharacterStateContinuity() {
   if (entries.length === 0) return null
   const latestValid = [...entries].reverse().find(entry => entry.status === 'valid' && entry.snapshot)
   const predecessor = latestValid?.snapshot?.baseline.predecessor
+  const invalidated = entries.filter(entry => entry.invalidatedByChange)
+  const invalidationStart = invalidated[0]?.source.chapterNumber
+  const invalidationEnd = invalidated.at(-1)?.source.chapterNumber
   return (
     <section className="cast-continuity" aria-label={text('章节状态连续性', 'Chapter-state continuity')}>
+      {invalidationStart !== undefined && invalidationEnd !== undefined && (
+        <p className="run-note" data-tone="danger">{invalidationStart === invalidationEnd
+          ? text(`失效范围：第 ${invalidationStart} 章；旧快照保留为历史。`, `Invalidated range: chapter ${invalidationStart}; previous snapshots are retained as history.`)
+          : text(`失效范围：第 ${invalidationStart} 至 ${invalidationEnd} 章；旧快照保留为历史。`, `Invalidated range: chapters ${invalidationStart}–${invalidationEnd}; previous snapshots are retained as history.`)}</p>
+      )}
       {cache?.status === 'rebuild-required' && (
         <p className="run-note" data-tone="danger">{text(
           '缓存待重建；章节快照和作者编辑已保留，当前派生状态不可用。',

@@ -105,4 +105,5 @@ export interface ChapterCharacterStateContinuityEntry {
   status: 'valid' | 'missing-snapshot' | 'invalid-snapshot' | 'waiting-predecessor'
   snapshot?: Omit<ChapterCharacterStateSnapshotSummary, 'character' | 'createdAt'>
   predecessorGapChapterNumber?: number
+  invalidatedByChange?: boolean
 }

@@ -279,6 +279,7 @@ function readContinuity(db: Database.Database): ChapterCharacterStateContinuityE
     }
     const waiting = !valid && !chainValid
     const status = valid ? 'valid' : waiting ? 'waiting-predecessor' : row ? 'invalid-snapshot' : 'missing-snapshot'
+    const invalidatedByChange = !valid && meta.staleFromChapter !== null && source.chapter_number >= meta.staleFromChapter
     if (!valid && chainValid) gapChapterNumber = source.chapter_number
     chainValid = valid
     previousValid = valid ? row : undefined
@@ -288,6 +289,7 @@ function readContinuity(db: Database.Database): ChapterCharacterStateContinuityE
       status,
       ...(snapshot ? { snapshot } : {}),
       ...(waiting ? { predecessorGapChapterNumber: gapChapterNumber } : {}),
+      ...(invalidatedByChange ? { invalidatedByChange: true } : {}),
     }
   })
 }

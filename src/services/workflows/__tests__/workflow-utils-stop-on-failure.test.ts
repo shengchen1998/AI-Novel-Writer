@@ -88,6 +88,27 @@ describe('runPostProcessPipeline stopOnFailure', () => {
     expect(secondStep).not.toHaveBeenCalled()
   })
 
+  it('stops an automatic batch when the required character snapshot step fails', async () => {
+    const invoke = stubIpcInvoke()
+    const laterStep = vi.fn(async () => undefined)
+    const callbacks = { log: vi.fn(), setProgress: vi.fn(), appendText: vi.fn() }
+
+    await expect(runPostProcessPipeline(
+      'C:/novel',
+      'chapter_2_finalize',
+      'Chapter 2 finalization',
+      [
+        { key: 'character_cards', label: 'Character state', critical: false, executor: async () => { throw new Error('snapshot storage failed') } },
+        { key: 'later', label: 'Later chapter work', critical: false, executor: laterStep },
+      ],
+      callbacks,
+      { retryCount: 0, stopOnFailure: true, cancellation: englishContext(), projectSession },
+    )).rejects.toThrow('Post-processing step failed: Character state — snapshot storage failed')
+
+    expect(invoke).toHaveBeenCalledWith('db:post-process-mark-step-failed', 'run-1', 'character_cards', 'snapshot storage failed', 'C:/novel', projectSession)
+    expect(laterStep).not.toHaveBeenCalled()
+  })
+
   it('keeps every step and the final summary bound to the id returned by create-run', async () => {
     const createdRunId = 'run-created-in-same-second'
     const unrelatedLatestRunId = 'run-unrelated-latest'

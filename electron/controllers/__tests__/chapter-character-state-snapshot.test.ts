@@ -14,6 +14,7 @@ import { exportPortableProject } from '../../services/project-archive-service'
 import { restorePortableProject } from '../../services/project-restore-service'
 import { readPortableRuntimeFreeze } from '../../services/portable-runtime-freeze'
 import { ChapterCharacterStateSnapshotRepository } from '../../repositories/chapter-character-state-snapshot-repository'
+import { invalidateContinuityProjectionFrom } from '../../repositories/summary-repository'
 import { refreshCharacterIdentityProjection } from '../../repositories/character-roster-repository'
 
 type Handler = (event: unknown, ...args: unknown[]) => Promise<unknown>
@@ -623,6 +624,106 @@ describe('first chapter character-state snapshot through real finalization and g
     await expect(invoke('finalization-generation:commit', extraction.request)).resolves.toEqual(effect)
     expect(await listSnapshots('character-lin')).toEqual([snapshot])
     expect(extraction.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('invalidates and preserves the suffix after an early chapter is refinalized', async () => {
+    const chapters = ['第一章旧正文。', '第二章正文。', '第三章正文。']
+    seedCharacter('character-lin', '林岚', {}, {})
+    chapters.forEach((content, index) => seedDraft(index + 1, 1, content, index + 1, `第${index + 1}章`))
+    const extractions = []
+    for (const [index, content] of chapters.entries()) {
+      const chapterNumber = index + 1
+      await finalize(chapterNumber, content, 1, chapterNumber, `第${chapterNumber}章`)
+      const extraction = await extractedCommit(chapterNumber, [])
+      extractions.push(extraction)
+      await invoke('finalization-generation:commit', extraction.request)
+    }
+    const before = await listSnapshots('character-lin')
+    expect(before).toHaveLength(3)
+    expect(before.every(snapshot => snapshot.validity === 'valid')).toBe(true)
+
+    const revised = '第一章新正文，后续状态必须重建。'
+    getProjectDb()!.prepare('INSERT INTO contents(id,body) VALUES(4,?)').run(revised)
+    getProjectDb()!.prepare("INSERT INTO drafts(id,chapter_number,version,status,content_id,word_count) VALUES(4,1,2,'draft',4,12)").run()
+    await finalize(4, revised, 1, 1, '第一章新稿')
+
+    await expect(invoke('finalized-character:read-state-continuity')).resolves.toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 1 }), status: 'missing-snapshot', invalidatedByChange: true }),
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 2 }), status: 'waiting-predecessor', predecessorGapChapterNumber: 1, invalidatedByChange: true }),
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 3 }), status: 'waiting-predecessor', predecessorGapChapterNumber: 1, invalidatedByChange: true }),
+    ])
+    const retained = await listSnapshots('character-lin')
+    expect(retained).toHaveLength(3)
+    expect(retained.map(snapshot => [snapshot.snapshotId, snapshot.snapshotHash])).toEqual(before.map(snapshot => [snapshot.snapshotId, snapshot.snapshotHash]))
+    expect(retained.map(snapshot => snapshot.validity)).toEqual(['superseded', 'waiting-predecessor', 'waiting-predecessor'])
+    await expect(invoke('finalized-character:read-state-cache')).resolves.toMatchObject({ status: 'invalid', reason: 'continuity-incomplete' })
+
+    const replacement = await extractedCommit(4, [])
+    await invoke('finalization-generation:commit', replacement.request)
+    await expect(invoke('finalized-character:read-state-continuity')).resolves.toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 1 }), status: 'valid' }),
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 2 }), status: 'invalid-snapshot', invalidatedByChange: true }),
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 3 }), status: 'waiting-predecessor', predecessorGapChapterNumber: 2, invalidatedByChange: true }),
+    ])
+    expect(await listSnapshots('character-lin')).toHaveLength(4)
+    for (const extraction of [...extractions, replacement]) expect(extraction.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the same invalidation watermark when an earlier finalization is inserted', async () => {
+    seedCharacter('character-lin', '林岚', {}, {})
+    seedDraft(1, 1, '第一章正文。', 1, '第一章')
+    seedDraft(2, 1, '后来补上的第二章。', 2, '第二章')
+    seedDraft(3, 1, '第三章正文。', 3, '第三章')
+    for (const draftId of [1, 3]) {
+      await finalize(draftId, draftId === 1 ? '第一章正文。' : '第三章正文。', 1, draftId, `第${draftId}章`)
+      const extraction = await extractedCommit(draftId, [])
+      await invoke('finalization-generation:commit', extraction.request)
+    }
+    const generation = getProjectDb()!.prepare("SELECT generation FROM continuity_projection_meta WHERE id='main'").pluck().get()
+
+    await finalize(2, '后来补上的第二章。', 1, 2, '第二章')
+
+    expect(getProjectDb()!.prepare("SELECT generation FROM continuity_projection_meta WHERE id='main'").pluck().get()).toBe((generation as number) + 1)
+    await expect(invoke('finalized-character:read-state-continuity')).resolves.toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 1 }), status: 'valid' }),
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 2 }), status: 'missing-snapshot', invalidatedByChange: true }),
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 3 }), status: 'waiting-predecessor', predecessorGapChapterNumber: 2, invalidatedByChange: true }),
+    ])
+  })
+
+  it('keeps chapter-order writes on the shared invalidation path without skipping a predecessor', async () => {
+    seedCharacter('character-lin', '林岚', {}, {})
+    for (const chapterNumber of [1, 2, 3]) {
+      const content = `第${chapterNumber}章正文。`
+      seedDraft(chapterNumber, 1, content, chapterNumber, `第${chapterNumber}章`)
+      await finalize(chapterNumber, content, 1, chapterNumber, `第${chapterNumber}章`)
+      const extraction = await extractedCommit(chapterNumber, [])
+      await invoke('finalization-generation:commit', extraction.request)
+    }
+
+    getProjectDb()!.transaction(() => {
+      getProjectDb()!.prepare('UPDATE drafts SET chapter_number=99 WHERE id=2').run()
+      getProjectDb()!.prepare('UPDATE drafts SET chapter_number=2 WHERE id=3').run()
+      getProjectDb()!.prepare('UPDATE drafts SET chapter_number=3 WHERE id=2').run()
+      getProjectDb()!.prepare('UPDATE finalization_outbox SET chapter_number=3 WHERE draft_id=2').run()
+      getProjectDb()!.prepare('UPDATE finalization_outbox SET chapter_number=2 WHERE draft_id=3').run()
+      invalidateContinuityProjectionFrom(getProjectDb()!, 2)
+    }).immediate()
+
+    await expect(invoke('finalized-character:read-state-continuity')).resolves.toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 1 }), status: 'valid' }),
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 2, draftId: 3 }), status: 'invalid-snapshot', invalidatedByChange: true }),
+      expect.objectContaining({ source: expect.objectContaining({ chapterNumber: 3, draftId: 2 }), status: 'waiting-predecessor', predecessorGapChapterNumber: 2, invalidatedByChange: true }),
+    ])
+    expect(await listSnapshots('character-lin')).toHaveLength(3)
+    const laterSource = getProjectDb()!.prepare(`SELECT d.id AS draftId,o.finalization_id AS finalizationId,
+      d.chapter_number AS chapterNumber,o.content_hash AS contentHash FROM drafts d
+      JOIN finalization_outbox o ON o.draft_id=d.id WHERE d.id=2`).get()
+    const fetch = stream(JSON.stringify({ updates: [] }))
+    await expect(invoke('finalization-generation:begin', {
+      slot: { source: laterSource, stepKey: 'character_cards' }, modelId: model.id,
+    })).rejects.toThrow()
+    expect(fetch).not.toHaveBeenCalled()
   })
 
   it('appends same-chapter versions without reviving the superseded snapshot while the replacement is pending or fails', async () => {

@@ -8,6 +8,7 @@ import { isDraftVisibleTextVersion } from '../../src/shared/draft-visible-text'
 import { isReceiptedDraftStatus } from '../../src/shared/draft-status'
 import { GenerationRunRepository, textHash, type DurableGenerationRun } from '../repositories/generation-run-repository'
 import { DraftRepository } from '../repositories/draft-repository'
+import { ChapterCharacterStateSnapshotRepository } from '../repositories/chapter-character-state-snapshot-repository'
 
 interface StoredDraftCommit extends GenerationDraftCommitReceipt {
   chapterNumber: number
@@ -127,8 +128,11 @@ export class GenerationDraftEffects {
       }
       const postProcess = outbox ? this.db.prepare("SELECT id,all_critical_passed FROM post_process_runs WHERE trigger_source_type='chapter_finalize' AND trigger_source_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1").get(`finalization:${outbox.finalization_id}`) as { id: string; all_critical_passed: number } | undefined : undefined
       const steps = postProcess ? this.db.prepare('SELECT step_key,critical,ok FROM post_process_steps WHERE run_id=?').all(postProcess.id) as { step_key: string; critical: number; ok: number }[] : []
+      const characterStateComplete = intent.mode !== 'auto_finalize' || !!outbox
+        && steps.some(step => step.step_key === 'character_cards' && step.ok === 1)
+        && ChapterCharacterStateSnapshotRepository.readContinuity(this.db).some(entry => entry.source.finalizationId === outbox.finalization_id && entry.status === 'valid')
       const postProcessComplete = postProcess?.all_critical_passed === 1 && ['kb_import', 'chapter_notes'].every(key => steps.some(step => step.step_key === key && step.critical === 1 && step.ok === 1))
-        && steps.filter(step => step.critical === 1).every(step => step.ok === 1)
+        && steps.filter(step => step.critical === 1).every(step => step.ok === 1) && characterStateComplete
       completedChapters.push({ chapterNumber: committed.chapterNumber, draftId: committed.id, version: committed.version,
         contentHash: committed.contentHash, sourceRunHandle: handleOf(this.runs.get(row.run_id)), postProcessComplete,
         ...(outbox?.publication_status === 'published' ? { finalizationId: outbox.finalization_id } : outbox ? { pendingFinalizationId: outbox.finalization_id } : {}) })

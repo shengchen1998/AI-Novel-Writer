@@ -83,7 +83,7 @@ vi.mock('../commands/finalize-chapter.command', () => ({
       await doubles.repairPostProcess(params)
       const batch = doubles.batch!
       const item = batch.completedChapters.find(item => item.chapterNumber === batch.nextChapterNumber)!
-      item.finalizationId = item.pendingFinalizationId
+      item.finalizationId = item.pendingFinalizationId ?? item.finalizationId
       item.pendingFinalizationId = undefined
       item.postProcessComplete = true
       batch.nextChapterNumber = item.chapterNumber === batch.range.endChapter ? null : item.chapterNumber + 1
@@ -470,6 +470,27 @@ describe('batch chapter workflow completion mode', () => {
     expect(doubles.finalizeChapterExecute).not.toHaveBeenCalled()
     expect(doubles.retryPublication).toHaveBeenCalledExactlyOnceWith('原定稿', projectSession())
     expect(doubles.repairPostProcess).toHaveBeenCalledOnce()
+  })
+
+  it('角色快照失败后只恢复原定稿后处理，不重新生成、定稿、发布或发起全书提取', async () => {
+    const root = { projectId: 'test-project', epoch: '原会话', rootActionId: '原预算根', runId: '原批次' }
+    doubles.batch = { batchId: '原批次', modelId: '原模型', rootHandle: root, mode: 'auto_finalize', range: { startChapter: 1, endChapter: 1 },
+      targetUnits: 2000, authorInputs: [], nextChapterNumber: 1,
+      completedChapters: [{ chapterNumber: 1, draftId: 101, version: 1,
+        contentHash: createHash('sha256').update('generated draft').digest('hex'), sourceRunHandle: root,
+        finalizationId: '原定稿', postProcessComplete: false }] }
+    const workflow = createBatchChapterWorkflow({ projectPath, projectSession: projectSession(), startChapterNumber: 1,
+      chapterCount: 1, chapterWordsTarget: 2000, generationModelId: '原模型', completionMode: 'auto_finalize', resumeBatchId: '原批次' })
+
+    await useWorkflowStore.getState().startWorkflow(workflow)
+
+    expect(useWorkflowStore.getState().history[0].status).toBe('completed')
+    expect(doubles.generateDraftExecute).not.toHaveBeenCalled()
+    expect(doubles.finalizeChapterExecute).not.toHaveBeenCalled()
+    expect(doubles.retryPublication).not.toHaveBeenCalled()
+    expect(doubles.repairPostProcess).toHaveBeenCalledOnce()
+    expect(doubles.invokeWithProjectSession).not.toHaveBeenCalledWith(expect.anything(), 'finalized-character:commit', expect.anything())
+    expect(doubles.invokeWithProjectSession).not.toHaveBeenCalledWith(expect.anything(), 'finalization-generation:begin', expect.anything())
   })
 
   it.each([

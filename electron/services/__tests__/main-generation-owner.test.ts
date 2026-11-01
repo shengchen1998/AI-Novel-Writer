@@ -27,6 +27,7 @@ import { DRAFT_RECONCILE_PURPOSE, parseDraftReconciliation, renderDraftReconcili
 import { DRAFT_SHORT_OUTLINE_PURPOSE, draftShortOutlineBlock } from '../../../src/shared/draft-short-outline'
 import { FinalizationRepository } from '../../repositories/finalization-repository'
 import { PostProcessRepository } from '../../repositories/post-process-repository'
+import { SummaryRepository } from '../../repositories/summary-repository'
 import { RevisionRepository } from '../../repositories/revision-repository'
 import { DraftRepository } from '../../repositories/draft-repository'
 import type { ModelProfile } from '../../../src/shared/ipc-channels'
@@ -2551,6 +2552,39 @@ describe('main draft persistence and batch lineage', () => {
     expect(DraftRepository.getFull(replacement)?.content).toBe('作者创建的新版本。')
     expect(f.dispatch).toHaveBeenCalledTimes(1)
   })
+  it.each(['character-step-failed', 'snapshot-missing'] as const)('keeps auto-finalize recovery on the original chapter after %s despite critical-step success', async failure => {
+    const f = drafting()
+    const batch = f.owner.beginBatch({ mode: 'auto_finalize', range: { startChapter: 1, endChapter: 1 }, targetUnits: 20,
+      uiActionNonce: 'batch', modelId: f.model.id, authorInputs, promptKeys: f.begin.promptKeys, skillStages: [] })
+    const generated = await generate(f, { ...f.begin, authorInputs, batchId: batch.batchId, parentRootActionId: batch.rootHandle.rootActionId })
+    const saved = f.owner.commitDraft(generated.request)
+    f.db.prepare("INSERT INTO characters(character_id,name,cs_provenance) VALUES('character-lin','林岚','{}')").run()
+    const finalizationId = `batch-character-${failure}`
+    FinalizationRepository.commit({ finalizationId, draftId: saved.id, chapterNumber: 1,
+      chapterTitle: '第一章', content: saved.content, contentHash: saved.contentHash, contentRevision: 1, targetFileName: '第一章.txt' })
+    FinalizationRepository.markPublished(finalizationId)
+    if (failure === 'character-step-failed') {
+      const context = SummaryRepository.readFinalizedCharacterContext(saved.id, { projectId: 'project', epoch: 'epoch-1' }, f.db)
+      SummaryRepository.commitFinalizedCharacterStates(context, { updates: [], unresolved: [] }, f.db)
+    }
+    const post = PostProcessRepository.createRun({ triggerSourceType: 'chapter_finalize', triggerSourceId: '1', sourceLabel: '第一章',
+      finalizedSource: { finalizationId, draftId: saved.id, chapterNumber: 1, contentHash: saved.contentHash },
+      steps: [{ key: 'kb_import', label: '知识库', critical: true }, { key: 'chapter_notes', label: '章节笔记', critical: true },
+        { key: 'character_cards', label: '角色状态', critical: false }] })
+    PostProcessRepository.markStepOk(post, 'kb_import')
+    PostProcessRepository.markStepOk(post, 'chapter_notes')
+    if (failure === 'snapshot-missing') PostProcessRepository.markStepOk(post, 'character_cards')
+    else PostProcessRepository.markStepFailed(post, 'character_cards', '快照写入失败')
+    expect(PostProcessRepository.getLatestRun('chapter_finalize', '1')?.allCriticalPassed).toBe(true)
+
+    const reopened = f.reopen(), progress = reopened.readBatch(batch.batchId)
+    expect(progress).toMatchObject({ nextChapterNumber: 1,
+      completedChapters: [{ chapterNumber: 1, draftId: saved.id, finalizationId, postProcessComplete: false }] })
+    expect(() => reopened.confirmBatchFinalization({ batchId: batch.batchId, chapterNumber: 1, finalizationId }))
+      .toThrow('GENERATION_BATCH_FINALIZATION_REQUIRED')
+    expect(DraftRepository.getFull(saved.id)).toMatchObject({ status: 'finalized', content: saved.content })
+    expect(f.dispatch).toHaveBeenCalledTimes(1)
+  })
   it.each(['draft_review', 'auto_finalize'] as const)('reads revised finalization without crediting the original %s batch', async mode => {
     const f = drafting()
     const batch = f.owner.beginBatch({ mode, range: { startChapter: 1, endChapter: 1 }, targetUnits: 20,
@@ -2930,6 +2964,7 @@ describe('main draft persistence and batch lineage', () => {
       uiActionNonce: 'batch', modelId: f.model.id, authorInputs, promptKeys: f.begin.promptKeys, skillStages: [] })
     const generated = await generate(f, { ...f.begin, authorInputs, batchId: batch.batchId, parentRootActionId: batch.rootHandle.rootActionId })
     const saved = f.owner.commitDraft(generated.request)
+    f.db.prepare("INSERT INTO characters(character_id,name,cs_provenance) VALUES('character-lin','林岚','{}')").run()
     FinalizationRepository.commit({ finalizationId: 'finalization-one', draftId: saved.id, chapterNumber: 1, chapterTitle: '第一章', content: saved.content,
       contentHash: saved.contentHash, contentRevision: 1, targetFileName: '第一章.txt' })
     expect(f.owner.readBatch(batch.batchId)).toMatchObject({ nextChapterNumber: 1, completedChapters: [{ pendingFinalizationId: 'finalization-one' }] })
@@ -2938,10 +2973,15 @@ describe('main draft persistence and batch lineage', () => {
     expect(() => f.owner.confirmBatchFinalization({ batchId: batch.batchId, chapterNumber: 1, finalizationId: 'finalization-one' })).toThrow('GENERATION_BATCH_FINALIZATION_REQUIRED')
     const post = PostProcessRepository.createRun({ triggerSourceType: 'chapter_finalize', triggerSourceId: '1', sourceLabel: '第一章',
       finalizedSource: { finalizationId: 'finalization-one', draftId: saved.id, chapterNumber: 1, contentHash: saved.contentHash },
-      steps: [{ key: 'kb_import', label: '知识库', critical: true }, { key: 'chapter_notes', label: '章节笔记', critical: true }] })
+      steps: [{ key: 'kb_import', label: '知识库', critical: true }, { key: 'chapter_notes', label: '章节笔记', critical: true },
+        { key: 'character_cards', label: '角色状态', critical: false }] })
     PostProcessRepository.markStepOk(post, 'kb_import')
     expect(f.owner.readBatch(batch.batchId).nextChapterNumber).toBe(1)
     PostProcessRepository.markStepOk(post, 'chapter_notes')
+    PostProcessRepository.markStepOk(post, 'character_cards')
+    expect(() => f.owner.confirmBatchFinalization({ batchId: batch.batchId, chapterNumber: 1, finalizationId: 'finalization-one' })).toThrow('GENERATION_BATCH_FINALIZATION_REQUIRED')
+    const context = SummaryRepository.readFinalizedCharacterContext(saved.id, { projectId: 'project', epoch: 'epoch-1' }, f.db)
+    SummaryRepository.commitFinalizedCharacterStates(context, { updates: [], unresolved: [] }, f.db)
     expect(f.owner.confirmBatchFinalization({ batchId: batch.batchId, chapterNumber: 1, finalizationId: 'finalization-one' }).nextChapterNumber).toBeNull()
   })
 
