@@ -7,6 +7,7 @@ import type {
 } from '../../../shared/chapter-character-state-snapshot'
 import { CHARACTER_STATE_FIELDS } from '../../editor/character-state-fields'
 import { Button } from '../../ui/Button'
+import CharacterStateContinuity from './CharacterStateContinuity'
 
 export default function CharacterStateHistory({ characterId }: { characterId: string }) {
   const text = useLocaleStore(s => s.text)
@@ -49,6 +50,7 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
 
   return (
     <section className="cast-history" aria-label={text('章节状态快照', 'Chapter state snapshots')}>
+      <CharacterStateContinuity />
       <div className="cast-history-index">
         <h2>{text('定稿历史', 'Finalization history')}</h2>
         {listStatus === 'loading' && <p role="status">{text('正在读取章节状态…', 'Loading chapter states…')}</p>}
@@ -100,6 +102,17 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
                 <dt>{text('草稿身份', 'Draft identity')}</dt><dd>{detail.source.draftId}</dd>
                 <dt>{text('定稿收据', 'Finalization receipt')}</dt><dd><code>{detail.source.finalizationId}</code></dd>
                 <dt>{text('正文哈希', 'Prose hash')}</dt><dd><code>{detail.source.contentHash}</code></dd>
+                <dt>{text('状态基线', 'State baseline')}</dt>
+                <dd>{detail.baseline.predecessor
+                  ? text(
+                    `继承第 ${detail.baseline.predecessor.source.chapterNumber} 章快照`,
+                    `Inherited from the chapter ${detail.baseline.predecessor.source.chapterNumber} snapshot`,
+                  )
+                  : text('角色名单初始基线', 'Initial roster baseline')}</dd>
+                <dt>{text('输入哈希', 'Input hash')}</dt>
+                <dd>{detail.inputHash ? <code>{detail.inputHash}</code> : text('旧快照未记录', 'Not recorded in this older snapshot')}</dd>
+                <dt>{text('连续性代际', 'Continuity generation')}</dt>
+                <dd>{detail.continuityGeneration ?? text('旧快照未记录', 'Not recorded in this older snapshot')}</dd>
               </dl>
             </section>
             <div className="cast-history-fields">

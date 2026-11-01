@@ -22,15 +22,49 @@ export interface ChapterCharacterStateSnapshotCharacter extends ChapterCharacter
   fields: ChapterCharacterStateSnapshotField[]
 }
 
+export interface ChapterCharacterStateSnapshotPredecessor {
+  snapshotId: string
+  snapshotHash: string
+  source: FinalizedSourceIdentity
+}
+
+export interface ChapterCharacterStateSnapshotBaseline {
+  kind: 'roster' | 'snapshot'
+  predecessor: ChapterCharacterStateSnapshotPredecessor | null
+  characters: ChapterCharacterStateSnapshotCharacter[]
+  inputHash: string
+  continuityGeneration: number
+}
+
+export function chapterCharacterStatePromptCards(baseline: ChapterCharacterStateSnapshotBaseline) {
+  return baseline.characters.map(character => ({
+    characterId: character.characterId,
+    name: character.displayNameSnapshot,
+    aliases: character.aliases,
+    fields: character.fields.map(field => ({ field: field.field, value: field.value, provenance: field.provenance })),
+  }))
+}
+
 export interface ChapterCharacterStateSnapshotSummary {
   snapshotId: string
   source: FinalizedSourceIdentity
   chapterTitle: string
   snapshotHash: string
   createdAt: string
+  baseline: Omit<ChapterCharacterStateSnapshotBaseline, 'characters' | 'inputHash' | 'continuityGeneration'>
+  inputHash: string | null
+  continuityGeneration: number | null
   character: ChapterCharacterStateSnapshotCharacterSummary
 }
 
 export type ChapterCharacterStateSnapshotDetail = Omit<ChapterCharacterStateSnapshotSummary, 'character'> & {
   character: ChapterCharacterStateSnapshotCharacter
+}
+
+export interface ChapterCharacterStateContinuityEntry {
+  source: FinalizedSourceIdentity
+  chapterTitle: string
+  status: 'valid' | 'missing-snapshot' | 'invalid-snapshot' | 'waiting-predecessor'
+  snapshot?: Omit<ChapterCharacterStateSnapshotSummary, 'character' | 'createdAt'>
+  predecessorGapChapterNumber?: number
 }

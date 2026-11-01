@@ -35,7 +35,7 @@ export interface PortableTransferAuthority {
   originProjectId: string
   targetProjectId: string | null
   snapshotGeneration: string
-  sourceSchemaVersion: 8
+  sourceSchemaVersion: 9
   portableDatabaseSha256: string
   requiresRuntimeFreezeGuard: true
   finalizations: PortableFinalizationAuthority[]

@@ -5,7 +5,7 @@ import { SqliteSchemaAdapter } from '../migrations/sqlite-schema-adapter'
 import fieldPolicyDocument from './portable-project-field-policy.json'
 
 export const PORTABLE_PROJECT_FORMAT_VERSION = 1 as const
-export const PORTABLE_SOURCE_SCHEMA_VERSION = 8 as const
+export const PORTABLE_SOURCE_SCHEMA_VERSION = 9 as const
 
 export type PortableFieldDisposition = 'preserve-domain' | 'historical-nonreplayable'
   | 'redacted-projection' | 'exclude-machine-authority' | 'rebuild-stale'
@@ -122,7 +122,7 @@ export interface PortableProjectManifestEntry {
 
 export interface PortableProjectManifest {
   formatVersion: 1
-  sourceSchemaVersion: 8
+  sourceSchemaVersion: 9
   originProjectId: string
   snapshotGeneration: string
   createdAt: string

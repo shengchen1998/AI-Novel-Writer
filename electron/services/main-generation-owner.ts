@@ -1512,6 +1512,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     decideFinalizedCharacterStateCandidate: (request: import('../../src/shared/finalized-continuity').FinalizedCharacterStateDecisionRequest) => finalizedCharacters.decideStateCandidate(request),
     listChapterCharacterStateSnapshots: (characterId: string) => finalizedCharacters.listStateSnapshots(characterId),
     readChapterCharacterStateSnapshot: (snapshotId: string, characterId: string) => finalizedCharacters.readStateSnapshot(snapshotId, characterId),
+    readChapterCharacterStateContinuity: () => finalizedCharacters.readStateContinuity(),
     prepareReviewRevision: (request: PrepareReviewRevisionRequest) => reviewRevisions.prepare(request),
     commitReview: (request: ReviewGenerationCommitRequest) => reviewRevisions.commitReview(request, assertSourcesCurrent),
     commitRevision: (request: RevisionGenerationCommitRequest) => reviewRevisions.commitRevision(request, assertSourcesCurrent),

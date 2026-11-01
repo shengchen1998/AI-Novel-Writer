@@ -218,6 +218,7 @@ export function registerGenerationController(options: {
   register('finalized-character:decide-state-candidate', 1, (owner, request) => owner.decideFinalizedCharacterStateCandidate(request))
   register('finalized-character:list-state-snapshots', 1, (owner, request) => owner.listChapterCharacterStateSnapshots(request.characterId))
   register('finalized-character:read-state-snapshot', 1, (owner, request) => owner.readChapterCharacterStateSnapshot(request.snapshotId, request.characterId))
+  register('finalized-character:read-state-continuity', 0, owner => owner.readChapterCharacterStateContinuity())
   register('finalization-generation:read', 1, (owner, request) => owner.readFinalizationGeneration(request))
   register('finalization-generation:begin', 1, (owner, request) => owner.beginFinalizationGeneration(request))
   register('finalization-generation:execute', 1, (owner, request) => owner.executeFinalizationGeneration(request))

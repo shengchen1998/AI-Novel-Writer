@@ -33,6 +33,7 @@ import { refreshCharacterStateProjection } from './character-roster-repository'
 import type { ProjectEpoch } from '../../src/shared/source-ref'
 import { RECEIPTED_DRAFT_STATUS_SQL } from '../../src/shared/draft-status'
 import { ChapterCharacterStateSnapshotRepository } from './chapter-character-state-snapshot-repository'
+import type { ChapterCharacterStateSnapshotBaseline } from '../../src/shared/chapter-character-state-snapshot'
 
 const FACT_CATEGORIES = new Set(['character-state', 'timeline', 'open-thread', 'plot'])
 const CHARACTER_STATE_FIELDS = new Set<string>(CHARACTER_STATE_TEXT_FIELDS)
@@ -423,7 +424,7 @@ export class SummaryRepository {
 
   /** originProjectId must come from readPortableCurrentAuthority for this project; it only lets origin-epoch derived fields advance. */
   static commitFinalizedCharacterStates(context: FinalizedCharacterContext, response: FinalizedCharacterStateResponse, database = getProjectDb(),
-    originProjectId?: string): FinalizedCharacterStateCommitReceipt {
+    originProjectId?: string, stateBaseline?: ChapterCharacterStateSnapshotBaseline): FinalizedCharacterStateCommitReceipt {
     if (!database) throw new Error('PROJECT_NOT_OPEN')
     const db = database
     return db.transaction(() => {
@@ -472,7 +473,7 @@ export class SummaryRepository {
       if (receipt.candidates.length) SummaryRepository.saveFinalizedCharacterStateCandidates({ draftId: context.source.draftId, chapterNumber: context.source.chapterNumber,
         projectionGeneration: context.projectionGeneration, source: context.source, candidates: receipt.candidates }, db)
       if (receipt.applied) refreshCharacterStateProjection(db)
-      ChapterCharacterStateSnapshotRepository.appendInitial(context, verified.updates, db)
+      ChapterCharacterStateSnapshotRepository.appendInitial(context, verified.updates, db, stateBaseline)
       return receipt
     }).immediate()
   }
