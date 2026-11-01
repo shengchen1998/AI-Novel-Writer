@@ -5,6 +5,7 @@ node_modules
 dist
 dist-electron
 release
+/electron/security/darwin-safe-file-system
 
 # 日志
 logs
