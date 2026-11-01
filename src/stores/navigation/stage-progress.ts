@@ -114,7 +114,7 @@ export function deriveStages(facts: WorkFacts, chapters: readonly ChapterRow[] =
   const total = Math.max(0, facts.config.totalChapters || 0)
   const planned = facts.blueprints.length
   const finalized = chapters.filter(row => row.phase === 'final').length
-  const started = chapters.some(begun)
+  const started = chapters.some(row => row.phase !== 'todo')
   return [
     { stage: 'setup', missing,
       progress: missing.length === 0 ? DONE : { state: 'active', ratio: (SETUP_FIELDS.length - missing.length) / SETUP_FIELDS.length } },

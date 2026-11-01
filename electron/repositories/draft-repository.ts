@@ -357,12 +357,28 @@ export class DraftRepository {
         content: string
         wordCount: number
         sourceDependencies?: DraftSourceDependency[]
+        onlyWhenChapterEmpty?: boolean
     }, capturedDatabase?: BetterSqlite3.Database): number {
         const db = capturedDatabase ?? getProjectDb()
         if (!db) throw new Error('PROJECT_NOT_OPEN')
 
         // 事务内原子分配 version，避免 getNextVersion + create 竞态
         const tx = db.transaction(() => {
+            if (params.onlyWhenChapterEmpty) {
+                const existing = db.prepare(`
+                  SELECT 1 FROM drafts
+                  WHERE chapter_number = ? AND status IN ('draft', 'reviewed', 'revised', 'finalized')
+                  LIMIT 1
+                `).get(params.chapterNumber)
+                const generating = db.prepare(`
+                  SELECT 1 FROM generation_runs
+                  WHERE status IN ('running', 'paused')
+                    AND json_extract(binding_json, '$.sourceManifest.operation') = 'chapter-draft'
+                    AND json_extract(binding_json, '$.sourceManifest.chapterNumber') = ?
+                  LIMIT 1
+                `).get(params.chapterNumber)
+                if (existing || generating) throw new Error('DRAFT_AUTHOR_CREATE_CONFLICT')
+            }
             const serializedDependencies = JSON.stringify(params.sourceDependencies ?? [])
             const parsedDependencies = parseDependencies(serializedDependencies)
             if (!parsedDependencies.valid) throw new Error('GENERATION_DRAFT_DEPENDENCY_INVALID')

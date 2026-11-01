@@ -170,6 +170,7 @@ describe('cast, blueprint and draft errors from the main process (#474 B2)', () 
   it.each([
     // 可写 db 通道返回 { error: String(error) }。
     ['Error: DRAFT_FINALIZED_READ_ONLY', 'This chapter is finalized', '这一章已经定稿'],
+    ['Error: DRAFT_AUTHOR_CREATE_CONFLICT', 'already has a draft or a final version', '这一章已有草稿或定稿'],
     ['Error: CHARACTER_ROSTER_REVISION_STALE', 'The cast changed in the meantime', '角色名单在这期间被改动了'],
     ['Error: CHARACTER_ROSTER_RELATIONSHIP_TARGET_UNKNOWN', 'must point to a character in the cast', '对象也必须是名单里已有的角色'],
     ["Error invoking remote method 'db:blueprint-character-sync-complete': Error: BLUEPRINT_CHARACTER_SYNC_ROSTER_NOT_READY", 'The cast needs repair first', '角色名单需要先修复'],
