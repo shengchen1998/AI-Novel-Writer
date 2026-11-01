@@ -49,7 +49,8 @@ export const AI_REVIEW = JSON.stringify({
 type Status = 'draft' | 'revised' | 'finalized' | 'superseded' | 'archived'
 
 interface Draft {
-  id: number; chapterNumber: number; version: number; status: Status; content: string; createdAt: string; updatedAt: string
+  id: number; chapterNumber: number; version: number; status: Status; source: 'write' | 'rewrite' | 'author'
+  content: string; createdAt: string; updatedAt: string
   sourceDependencies?: DraftSourceDependency[]; dependenciesStale?: boolean
 }
 interface Review { id: number; baseDraftId: number; reviewIndex: number; content: string; source: Draft; createdAt: string }
@@ -88,7 +89,7 @@ export function createChapterBackend() {
     return `2026-10-13 21:${String(Math.floor(state.clock / 60)).padStart(2, '0')}:${String(state.clock % 60).padStart(2, '0')}`
   }
   const meta = (draft: Draft) => ({
-    id: draft.id, chapterNumber: draft.chapterNumber, version: draft.version, status: draft.status, source: 'write',
+    id: draft.id, chapterNumber: draft.chapterNumber, version: draft.version, status: draft.status, source: draft.source,
     wordCount: draft.content.length, createdAt: draft.createdAt, updatedAt: draft.updatedAt,
     sourceDependencies: draft.sourceDependencies ?? [], dependenciesStale: draft.dependenciesStale ?? false,
   })
@@ -102,6 +103,13 @@ export function createChapterBackend() {
     switch (channel) {
       case 'db:blueprint-get-all': return [BLUEPRINT]
       case 'db:blueprint-get': return Number(args[0]) === BLUEPRINT.chapterNumber ? BLUEPRINT : null
+      case 'db:draft-create': {
+        const request = args[0] as Pick<Draft, 'chapterNumber' | 'version' | 'source' | 'content' | 'sourceDependencies'>
+        const createdAt = now()
+        const draft: Draft = { id: ++state.nextId, status: 'draft', createdAt, updatedAt: createdAt, ...request }
+        state.drafts.push(draft)
+        return { success: true, id: draft.id }
+      }
       case 'db:draft-get-meta': { const draft = byId(args[0]); return draft ? meta(draft) : null }
       case 'db:draft-list': return state.drafts.filter(draft => draft.chapterNumber === Number(args[0])).map(meta)
       case 'db:draft-list-all': return state.drafts.map(meta)
@@ -212,7 +220,7 @@ export function createChapterBackend() {
   })
 
   const addDraft = (fields: Partial<Draft> & Pick<Draft, 'status'>): Draft => {
-    const draft: Draft = { id: ++state.nextId, chapterNumber: 3, version: 1, content: ORIGINAL, createdAt: '2026-10-13 20:00:00', updatedAt: '2026-10-13 20:00:00', ...fields }
+    const draft: Draft = { id: ++state.nextId, chapterNumber: 3, version: 1, source: 'write', content: ORIGINAL, sourceDependencies: [], createdAt: '2026-10-13 20:00:00', updatedAt: '2026-10-13 20:00:00', ...fields }
     state.drafts.push(draft)
     return draft
   }

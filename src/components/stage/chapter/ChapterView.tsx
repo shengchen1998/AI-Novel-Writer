@@ -63,7 +63,7 @@ function useShownReview(reviews: readonly ReviewEntry[], projectKey: string) {
 }
 
 /**
- * 正文单章视图：章节头、生命周期、章节动作条、版本切换器与纸面正文。待写章显示本章蓝图与写作此章。
+ * 正文单章视图：章节头、生命周期、章节动作条、版本切换器与纸面正文。待写章显示本章蓝图、AI 写作与自己写。
  * 审稿报告是视图里的侧页，修稿合并在纸面上逐段选择，定稿后显示后处理四步；全程不需要离开这个标签。
  */
 export default function ChapterView({ tab }: { tab: EditorTab }) {
@@ -133,7 +133,10 @@ function DraftChapter({ tab, filePath, projectKey }: { tab: EditorTab; filePath:
               step={stage === 'archived' || stage === 'superseded' || stage === null ? null : STAGE_STEP[stage]}
               focus={focus}
               version={draft.meta
-                ? <VersionSwitcher tab={tab} current={draft.meta} label={versionLabel} title={title} onSave={() => draft.save(draft.currentBodyRef.current, true)} />
+                ? <>
+                  <VersionSwitcher tab={tab} current={draft.meta} label={versionLabel} title={title} onSave={() => draft.save(draft.currentBodyRef.current, true)} />
+                  {draft.meta.source === 'author' && <span className="stage-ch-version-chip">{text('作者提供', 'Author-provided')}</span>}
+                </>
                 : <span className="stage-ch-version stage-ch-version-chip" role="status">{versionLabel}</span>}
             />
           )}

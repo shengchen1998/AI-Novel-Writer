@@ -757,7 +757,7 @@ export function registerDatabaseController() {
   ipcMain.handle('db:draft-create', async (_event, params: {
     chapterNumber: number
     version: number
-    source: 'write' | 'rewrite'
+    source: 'write' | 'rewrite' | 'author'
     content: string
     wordCount: number
     sourceDependencies?: DraftSourceDependency[]
