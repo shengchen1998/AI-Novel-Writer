@@ -216,6 +216,7 @@ export const zhCN = {
   'error.narrativeThreadEvidenceNotInSource': '请粘贴所选定稿章节中实际出现的短原文。',
   'error.plotThreadWriteFailed': '已有的线索和剧情树都还在。这次修改没能写进作品，请刷新后再试一次。',
   'error.draftNotFound': '这份草稿已经不在了（可能已被删除），本次修改没有保存。',
+  'error.draftAuthorCreateConflict': '这一章已有草稿或定稿，也可能有尚未完成的 AI 写作。没有创建新的作者草稿。已刷新本章，请基于最新状态继续。',
   'error.draftFinalizedReadOnly': '这一章已经定稿，定稿正文是只读的，本次修改没有保存。',
   'error.supersededDraftDeleteForbidden': '这一稿是已被替换的旧定稿，不能单独删除；删除这一章的正文时会一起删掉。',
   'error.finalizationSuperseded': '这份定稿已被这一章更新的定稿替换，不再发布或重新定稿。',

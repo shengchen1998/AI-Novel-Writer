@@ -780,6 +780,7 @@ export function registerDatabaseController() {
     content: string
     wordCount: number
     sourceDependencies?: DraftSourceDependency[]
+    onlyWhenChapterEmpty?: boolean
   }, expectedProjectPath: string) => {
     try {
       assertRequiredExpectedProjectPath(getCurrentProjectPath(), expectedProjectPath)

@@ -214,6 +214,7 @@ export const enUS = {
   'error.narrativeThreadEvidenceNotInSource': 'Paste a short excerpt that appears in the selected finalized chapter.',
   'error.plotThreadWriteFailed': 'Your existing threads and plot tree are still there. This change could not be saved to the project. Refresh, then try again.',
   'error.draftNotFound': 'This draft no longer exists (it may have been deleted), so the change was not saved.',
+  'error.draftAuthorCreateConflict': 'This chapter already has a draft or a final version, or an AI writing run is still unfinished. No author draft was created. The chapter has been refreshed; continue from the latest state.',
   'error.draftFinalizedReadOnly': 'This chapter is finalized and its text is read-only, so the change was not saved.',
   'error.supersededDraftDeleteForbidden': 'This is a replaced final version and cannot be deleted on its own; it is removed together with the chapter manuscript.',
   'error.finalizationSuperseded': 'This final version was replaced by a newer final version of the chapter, so it is no longer published or finalized again.',
