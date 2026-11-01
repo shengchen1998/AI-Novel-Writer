@@ -1,5 +1,5 @@
 import type { CharacterStateFieldProvenance, CharacterStateTextField } from './character-roster'
-import type { FinalizedCharacterEvidence, FinalizedSourceIdentity } from './finalized-continuity'
+import type { FinalizedCharacterEvidence, FinalizedCharacterStateOccurrence, FinalizedSourceIdentity } from './finalized-continuity'
 
 export const CHAPTER_CHARACTER_STATE_SNAPSHOT_SCHEMA_VERSION = 1 as const
 
@@ -74,6 +74,7 @@ export interface ChapterCharacterStateSnapshotVersionSummary extends ChapterChar
 
 export type ChapterCharacterStateSnapshotDetail = Omit<ChapterCharacterStateSnapshotVersionSummary, 'character'> & {
   character: ChapterCharacterStateSnapshotCharacter
+  unresolved: FinalizedCharacterStateOccurrence[]
 }
 
 export type ChapterCharacterStateSnapshotFieldChange = 'added' | 'changed' | 'cleared' | 'unchanged'

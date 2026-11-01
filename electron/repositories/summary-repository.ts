@@ -437,7 +437,7 @@ export class SummaryRepository {
       const verified = parseFinalizedCharacterStateResponse(JSON.stringify({ updates: response.updates }), context)
       if (verified.unresolved.length) throw new Error('FINALIZED_CHARACTER_IDENTITY_REQUIRED')
       const baseline = stateBaseline ?? ChapterCharacterStateSnapshotRepository.captureBaseline(context, db) ?? undefined
-      const snapshotId = ChapterCharacterStateSnapshotRepository.appendInitial(context, verified.updates, db, baseline, snapshotOperationId)
+      const snapshotId = ChapterCharacterStateSnapshotRepository.appendInitial(context, verified.updates, db, response.unresolved, baseline, snapshotOperationId)
       const receipt: FinalizedCharacterStateCommitReceipt = { applied: 0, unchanged: 0, candidates: [] }
       for (const update of verified.updates) {
         const captured = context.characters.find(item => item.characterId === update.characterId)!

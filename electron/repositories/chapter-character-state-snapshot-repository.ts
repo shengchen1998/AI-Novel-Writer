@@ -19,9 +19,12 @@ import {
 import { CHARACTER_STATE_TEXT_FIELDS, type CharacterStateFieldProvenance } from '../../src/shared/character-roster'
 import type {
   FinalizedCharacterContext,
+  FinalizedCharacterStateOccurrence,
   FinalizedCharacterStateUpdate,
   FinalizedSourceIdentity,
 } from '../../src/shared/finalized-continuity'
+
+const FINALIZED_CHARACTER_UNRESOLVED_KIND = 'finalized-character-unresolved:v1'
 
 interface SnapshotPayload {
   version: typeof CHAPTER_CHARACTER_STATE_SNAPSHOT_SCHEMA_VERSION
@@ -29,6 +32,7 @@ interface SnapshotPayload {
   source: FinalizedSourceIdentity
   chapterTitle: string
   characters: ChapterCharacterStateSnapshotCharacter[]
+  unresolved?: FinalizedCharacterStateOccurrence[]
   baseline?: ChapterCharacterStateSnapshotSummary['baseline']
   inputHash?: string
   continuityGeneration?: number
@@ -96,11 +100,11 @@ function readSnapshotRow(db: Database.Database, snapshotId: string): SnapshotRow
 
 function baselineFromRow(db: Database.Database, row: SnapshotRow): ChapterCharacterStateSnapshotSummary['baseline'] {
   const predecessorRow = row.predecessor_snapshot_id ? readSnapshotRow(db, row.predecessor_snapshot_id) : undefined
-  if (row.predecessor_snapshot_id && (!predecessorRow || predecessorRow.snapshot_hash !== row.predecessor_hash)) {
+  if (predecessorRow && predecessorRow.snapshot_hash !== row.predecessor_hash) {
     throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_PREDECESSOR_INVALID')
   }
   return {
-    kind: predecessorRow ? 'snapshot' : 'roster',
+    kind: row.predecessor_snapshot_id ? 'snapshot' : 'roster',
     predecessor: predecessorRow ? {
       snapshotId: predecessorRow.snapshot_id,
       snapshotHash: predecessorRow.snapshot_hash,
@@ -164,6 +168,21 @@ function readCharacter(db: Database.Database, snapshotId: string, characterId: s
   return row ? { ...characterSummary(row), fields: readFields(db, snapshotId, characterId) } : null
 }
 
+function readUnresolved(db: Database.Database, snapshotId: string, source: FinalizedSourceIdentity): FinalizedCharacterStateOccurrence[] | undefined {
+  const row = db.prepare('SELECT source_key,source_hash,raw_value FROM character_identity_proposals WHERE proposal_id=?')
+    .get(`fcu:${snapshotId}`) as { source_key: string; source_hash: string; raw_value: string } | undefined
+  if (!row) return undefined
+  try {
+    const stored = JSON.parse(row.raw_value) as { kind?: string; finalizationId?: string; unresolved?: unknown }
+    if (row.source_key !== FINALIZED_CHARACTER_UNRESOLVED_KIND || sha256(row.raw_value) !== row.source_hash
+      || stored.kind !== FINALIZED_CHARACTER_UNRESOLVED_KIND || stored.finalizationId !== source.finalizationId
+      || !Array.isArray(stored.unresolved)) throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_INVALID')
+    return stored.unresolved as FinalizedCharacterStateOccurrence[]
+  } catch {
+    throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_INVALID')
+  }
+}
+
 function readPayload(db: Database.Database, snapshotId: string): { payload: SnapshotPayload; snapshotHash: string } | null {
   const header = db.prepare('SELECT * FROM chapter_character_state_snapshots WHERE snapshot_id=?').get(snapshotId) as SnapshotRow | undefined
   if (!header) return null
@@ -177,6 +196,7 @@ function readPayload(db: Database.Database, snapshotId: string): { payload: Snap
       return stored
     }),
   }))
+  const unresolved = readUnresolved(db, header.snapshot_id, sourceFromRow(header))
   const continuity = header.input_hash === null || header.continuity_generation === null ? {} : {
     baseline: baselineFromRow(db, header),
     inputHash: header.input_hash,
@@ -189,6 +209,7 @@ function readPayload(db: Database.Database, snapshotId: string): { payload: Snap
       source: sourceFromRow(header),
       chapterTitle: header.chapter_title,
       characters,
+      ...(unresolved ? { unresolved } : {}),
       ...continuity,
     },
     snapshotHash: header.snapshot_hash,
@@ -367,7 +388,8 @@ function captureBaseline(context: FinalizedCharacterContext, db: Database.Databa
 }
 
 function buildPayload(context: FinalizedCharacterContext, updates: FinalizedCharacterStateUpdate[], chapterTitle: string,
-  baseline: ChapterCharacterStateSnapshotBaseline, operationId = operationIdFor(context.source)): SnapshotPayload {
+  baseline: ChapterCharacterStateSnapshotBaseline, unresolved: FinalizedCharacterStateOccurrence[],
+  operationId = operationIdFor(context.source)): SnapshotPayload {
   const characters = structuredClone(baseline.characters)
   for (const update of updates) applyUpdate(context, characters, update)
   return {
@@ -376,6 +398,7 @@ function buildPayload(context: FinalizedCharacterContext, updates: FinalizedChar
     source: structuredClone(context.source),
     chapterTitle,
     characters,
+    unresolved: structuredClone(unresolved),
     baseline: { kind: baseline.kind, predecessor: structuredClone(baseline.predecessor) },
     inputHash: baseline.inputHash,
     continuityGeneration: baseline.continuityGeneration,
@@ -409,6 +432,16 @@ function insertPayload(db: Database.Database, payload: SnapshotPayload, snapshot
         field.knownAtChapter, JSON.stringify(field.provenance), field.evidence ? JSON.stringify(field.evidence) : null)
     }
   }
+  const unresolved = JSON.stringify({
+    kind: FINALIZED_CHARACTER_UNRESOLVED_KIND,
+    finalizationId: payload.source.finalizationId,
+    unresolved: payload.unresolved ?? [],
+  })
+  const candidateIds = [...new Set((payload.unresolved ?? []).flatMap(item => item.candidateIds))]
+  db.prepare(`INSERT INTO character_identity_proposals(
+    proposal_id,owner_character_id,source_key,source_hash,raw_value,candidate_ids_json
+  ) VALUES(?,NULL,?,?,?,?)`).run(`fcu:${snapshotId}`, FINALIZED_CHARACTER_UNRESOLVED_KIND,
+    sha256(unresolved), unresolved, JSON.stringify(candidateIds))
 }
 
 export class ChapterCharacterStateSnapshotRepository {
@@ -420,6 +453,7 @@ export class ChapterCharacterStateSnapshotRepository {
     context: FinalizedCharacterContext,
     updates: FinalizedCharacterStateUpdate[],
     db: Database.Database,
+    unresolved: FinalizedCharacterStateOccurrence[],
     frozenBaseline?: ChapterCharacterStateSnapshotBaseline,
     operationId = operationIdFor(context.source),
   ): string | null {
@@ -440,7 +474,7 @@ export class ChapterCharacterStateSnapshotRepository {
     }
     const baseline = frozenBaseline ?? captureBaseline(context, db)
     if (!baseline) return null
-    const payload = buildPayload(context, updates, source.chapterTitle, baseline, operationId)
+    const payload = buildPayload(context, updates, source.chapterTitle, baseline, unresolved, operationId)
     const snapshotHash = sha256(JSON.stringify(payload))
     insertPayload(db, payload, snapshotId, snapshotHash)
     const saved = readPayload(db, snapshotId)
@@ -479,10 +513,15 @@ export class ChapterCharacterStateSnapshotRepository {
       WHERE s.snapshot_id=? AND c.character_id=?`).get(snapshotId, characterId) as (SnapshotRow & CharacterRow) | undefined
     if (!row) return null
     const character = readCharacter(db, snapshotId, characterId)
-    if (!character || character.fields.length !== CHARACTER_STATE_TEXT_FIELDS.length) {
+    const saved = readPayload(db, snapshotId)
+    if (!character || character.fields.length !== CHARACTER_STATE_TEXT_FIELDS.length || !saved) {
       throw new Error('CHAPTER_CHARACTER_STATE_SNAPSHOT_INVALID')
     }
-    return { ...versionSummaryFromRows(db, row, readValidityBySnapshot(db)), character }
+    return {
+      ...versionSummaryFromRows(db, row, readValidityBySnapshot(db)),
+      character,
+      unresolved: saved.payload.unresolved ?? [],
+    }
   }
 
   static compareForCharacter(
