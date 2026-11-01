@@ -49,6 +49,7 @@ describe('single-instance runtime', () => {
       getWindow: () => ({
         isDestroyed: () => false,
         isMinimized: () => true,
+        webContents: { isCrashed: () => false, reload: vi.fn() },
         restore,
         show,
         focus,
@@ -57,6 +58,33 @@ describe('single-instance runtime', () => {
 
     listener?.()
     expect(restore).toHaveBeenCalledOnce()
+    expect(show).toHaveBeenCalledOnce()
+    expect(focus).toHaveBeenCalledOnce()
+  })
+
+  it('reloads a crashed primary renderer after a second launch', () => {
+    let listener: (() => void) | undefined
+    const reload = vi.fn()
+    const show = vi.fn()
+    const focus = vi.fn()
+
+    configureSingleInstanceRuntime({
+      releaseSmokeRequested: false,
+      requestLock: () => true,
+      quit: vi.fn(),
+      onSecondInstance: next => { listener = next },
+      getWindow: () => ({
+        isDestroyed: () => false,
+        isMinimized: () => false,
+        webContents: { isCrashed: () => true, reload },
+        restore: vi.fn(),
+        show,
+        focus,
+      }),
+    })
+
+    listener?.()
+    expect(reload).toHaveBeenCalledOnce()
     expect(show).toHaveBeenCalledOnce()
     expect(focus).toHaveBeenCalledOnce()
   })
