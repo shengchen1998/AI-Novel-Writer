@@ -505,6 +505,55 @@ describe('batch chapter workflow completion mode', () => {
     expect(useWorkflowStore.getState().history[0]).toMatchObject({ status: 'failed', error })
   })
 
+  it('stops at an author draft without overwriting it or starting later chapters', async () => {
+    const authorDraft = {
+      id: 88,
+      chapterNumber: 2,
+      version: 3,
+      status: 'draft',
+      source: 'author',
+      content: '作者亲手写的第二章，批量任务不得改动。',
+      sourceDependencies: [],
+    }
+    doubles.invokeWithProjectSession.mockImplementation(async (
+      _session: unknown,
+      channel: string,
+      ...args: unknown[]
+    ) => {
+      if (channel === 'db:blueprint-get') {
+        const chapterNumber = Number(args[0])
+        return { chapterNumber, title: `Chapter ${chapterNumber}`, role: 'development' }
+      }
+      if (channel === 'db:draft-get-latest') return Number(args[0]) === 2 ? authorDraft : null
+      throw new Error(`Unexpected IPC channel in batch workflow test: ${channel}`)
+    })
+    const workflow = createBatchChapterWorkflow({
+      projectPath,
+      projectSession: projectSession(),
+      startChapterNumber: 1,
+      chapterCount: 3,
+      generationModelId: 'grok-selected-model',
+      completionMode: 'draft_review',
+      locale: 'en-US',
+    })
+
+    await useWorkflowStore.getState().startWorkflow(workflow)
+
+    expect(doubles.generateDraftExecute).toHaveBeenCalledOnce()
+    expect(doubles.generateDraftChapterInfos.map(info => info.chapterNumber)).toEqual([1])
+    expect(doubles.finalizeChapterExecute).not.toHaveBeenCalled()
+    expect(authorDraft).toMatchObject({ id: 88, version: 3, source: 'author', content: '作者亲手写的第二章，批量任务不得改动。', sourceDependencies: [] })
+    expect(useWorkflowStore.getState().history[0]).toMatchObject({
+      status: 'failed',
+      error: 'Chapter 2 already has a draft. Batch writing will not overwrite it.',
+      steps: [
+        expect.objectContaining({ status: 'completed' }),
+        expect.objectContaining({ status: 'failed' }),
+        expect.objectContaining({ status: 'pending' }),
+      ],
+    })
+  })
+
   it('keeps auto-finalize failure-stop semantics and does not start a later chapter', async () => {
     doubles.finalizeChapterExecute
       .mockResolvedValueOnce(undefined)
