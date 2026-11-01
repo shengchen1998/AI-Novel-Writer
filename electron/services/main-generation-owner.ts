@@ -42,6 +42,9 @@ import { validateEditorInlineInput, readEditorInlineContext, readEditorInlineTas
 import type { FinalizationGenerationChannels, FinalizationGenerationSlot, FinalizationGenerationRecovery } from '../../src/shared/finalization-generation'
 import { FinalizationGeneration } from './finalization-generation'
 import { finalizationSlotKey, readFinalizationGenerationContext } from './finalization-generation-source'
+import { ChapterCharacterStateRebuild } from './chapter-character-state-rebuild'
+import type { ChapterCharacterStateRebuildPlan } from '../../src/shared/chapter-character-state-rebuild'
+import { CHAPTER_CHARACTER_STATE_REBUILD_OPERATION } from '../../src/shared/chapter-character-state-rebuild'
 import { proveFinalizedCharacterGeneration } from './finalized-character-generation-proof'
 import { FinalizedCharacterEvidenceError, parseFinalizedCharacterStateResponse } from '../../src/shared/finalized-continuity'
 import type { GraphGenerationChannels, GraphGenerationInput, GraphGenerationRecovery } from '../../src/shared/graph-generation'
@@ -78,7 +81,7 @@ export interface MainGenerationOwnerDependencies {
   assertCurrent: () => void
   leases: ModelExecutionLeaseRegistry
   loadModel: (id: string) => ModelProfile | null
-  buildBinding: (selection: BeginGenerationRequest & { knowledgeSnapshot?: GenerationKnowledgeSnapshot; finalizedCharacterContextHash?: string; reviewRevisionContext?: ReviewRevisionContext; agentInput?: AgentGenerationInput; agentSession?: { key: string; roundIndex: number }; editorInlineInput?: EditorInlineInput; finalizationGenerationSlot?: FinalizationGenerationSlot; graphGenerationInput?: GraphGenerationInput; graphGenerationKey?: string; legacyRosterKey?: string }, model: SafeGenerationModelReceipt, policy: MainGenerationPolicy) => RunBinding
+  buildBinding: (selection: BeginGenerationRequest & { knowledgeSnapshot?: GenerationKnowledgeSnapshot; finalizedCharacterContextHash?: string; reviewRevisionContext?: ReviewRevisionContext; agentInput?: AgentGenerationInput; agentSession?: { key: string; roundIndex: number }; editorInlineInput?: EditorInlineInput; finalizationGenerationSlot?: FinalizationGenerationSlot; characterStateRebuild?: { rebuildId: string; plan: ChapterCharacterStateRebuildPlan }; graphGenerationInput?: GraphGenerationInput; graphGenerationKey?: string; legacyRosterKey?: string }, model: SafeGenerationModelReceipt, policy: MainGenerationPolicy) => RunBinding
   rebuildBinding: (previous: RunBinding, model: SafeGenerationModelReceipt) => RunBinding
   beforeDispatch?: () => void
   onSnapshot?: (snapshot: MainGenerationSnapshot) => void
@@ -408,15 +411,16 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     preparations.set(preparationId, { binding, knowledgeSnapshot: structuredClone(knowledgeSnapshot) })
     return { preparationId, knowledgeSnapshot: structuredClone(knowledgeSnapshot), selectedDrafts }
   }
-  const begin = (selection: (BeginGenerationRequest | AgentBeginSelection) & { editorInlineInput?: EditorInlineInput; finalizationGenerationSlot?: FinalizationGenerationSlot; graphGenerationInput?: GraphGenerationInput; graphGenerationKey?: string; legacyRosterKey?: string }, batchInitialization = false, agentInitialization = false, editorInitialization = false, finalizationInitialization = false, graphInitialization = false, legacyInitialization = false): MainGenerationRunView => {
+  const begin = (selection: (BeginGenerationRequest | AgentBeginSelection) & { editorInlineInput?: EditorInlineInput; finalizationGenerationSlot?: FinalizationGenerationSlot; characterStateRebuild?: { rebuildId: string; plan: ChapterCharacterStateRebuildPlan }; graphGenerationInput?: GraphGenerationInput; graphGenerationKey?: string; legacyRosterKey?: string }, batchInitialization = false, agentInitialization = false, editorInitialization = false, finalizationInitialization = false, graphInitialization = false, legacyInitialization = false, rebuildInitialization = false): MainGenerationRunView => {
     assertCurrent()
     if (!selection || typeof selection.operation !== 'string' || !/^[a-z0-9][a-z0-9:_-]{0,127}$/u.test(selection.operation)
       || !Array.isArray(selection.promptKeys) || selection.promptKeys.length === 0
       || Object.hasOwn(selection, 'parentRootActionId') && (typeof selection.parentRootActionId !== 'string' || !selection.parentRootActionId.trim())
       || typeof selection.uiActionNonce !== 'string' || !selection.uiActionNonce.trim() || selection.uiActionNonce.length > 256
-      || Object.keys(selection).some(key => !['operation', 'uiActionNonce', 'modelId', 'chapterNumber', 'selectedDraftIds', 'selectedFinalizedDraftIds', 'selectedBlueprintChapterNumbers', 'promptKeys', 'skillStages', 'authorInputs', 'output', 'outputOverrides', 'parentRootActionId', 'continueDirectoryOperationId', 'batchId', 'batchIntent', 'preparationId', 'finalizedCharacterContextId', 'reviewRevisionContextId', 'agentWorkflowRegistrationId', 'materialDecision', 'importSlot', 'importExecution', ...(agentInitialization ? ['agentInput', 'agentSession'] : []), ...(editorInitialization ? ['editorInlineInput'] : []), ...(finalizationInitialization ? ['finalizationGenerationSlot'] : []), ...(graphInitialization ? ['graphGenerationInput', 'graphGenerationKey'] : []), ...(legacyInitialization ? ['legacyRosterKey'] : [])].includes(key))) throw new Error('GENERATION_BEGIN_INVALID')
+      || Object.keys(selection).some(key => !['operation', 'uiActionNonce', 'modelId', 'chapterNumber', 'selectedDraftIds', 'selectedFinalizedDraftIds', 'selectedBlueprintChapterNumbers', 'promptKeys', 'skillStages', 'authorInputs', 'output', 'outputOverrides', 'parentRootActionId', 'continueDirectoryOperationId', 'batchId', 'batchIntent', 'preparationId', 'finalizedCharacterContextId', 'reviewRevisionContextId', 'agentWorkflowRegistrationId', 'materialDecision', 'importSlot', 'importExecution', ...(agentInitialization ? ['agentInput', 'agentSession'] : []), ...(editorInitialization ? ['editorInlineInput'] : []), ...(finalizationInitialization ? ['finalizationGenerationSlot'] : []), ...(rebuildInitialization ? ['characterStateRebuild'] : []), ...(graphInitialization ? ['graphGenerationInput', 'graphGenerationKey'] : []), ...(legacyInitialization ? ['legacyRosterKey'] : [])].includes(key))) throw new Error('GENERATION_BEGIN_INVALID')
     if (selection.operation === 'editor-inline' && !editorInitialization) throw new Error('GENERATION_EDITOR_ADMISSION_REQUIRED')
     if (['finalized-chapter-notes', 'finalized-character-state'].includes(selection.operation) && !finalizationInitialization) throw new Error('GENERATION_FINALIZATION_ADMISSION_REQUIRED')
+    if (selection.operation === CHAPTER_CHARACTER_STATE_REBUILD_OPERATION && !rebuildInitialization) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_ADMISSION_REQUIRED')
     if (Object.values(graphOperations).includes(selection.operation as typeof graphOperations[keyof typeof graphOperations]) && !graphInitialization) throw new Error('GENERATION_GRAPH_ADMISSION_REQUIRED')
     if (selection.operation === 'legacy-character-roster-repair' && !legacyInitialization) throw new Error('GENERATION_LEGACY_ADMISSION_REQUIRED')
     const importAdmission = imports.admit(selection)
@@ -476,7 +480,8 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
         selection = { ...selection, authorInputs: [...(selection.authorInputs ?? []).filter(input => input.id !== 'planning:target-units'),
           { id: 'planning:target-units', text: String(targetUnits) }] }
       }
-      let policy = parentRootActionId ? rootPolicy(parentRootActionId) : newMainGenerationPolicy(selection, deps.leases.resolve(lease.leaseId), importAdmission?.chapterCount)
+      let policy = parentRootActionId ? rootPolicy(parentRootActionId) : newMainGenerationPolicy(selection, deps.leases.resolve(lease.leaseId),
+        importAdmission?.chapterCount ?? (selection.characterStateRebuild ? selection.characterStateRebuild.plan.chapters.length * 3 : undefined))
       if (parentRootActionId && agentWorkflow && scope) policy = { ...policy, planning: scope }
       else if (parentRootActionId && policy.planning) {
         if (continuation && policy.planning.kind === 'directory' && scope?.kind === 'directory') {
@@ -508,6 +513,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
         if (existing && !finalizations.retryable(existing)) return existing
         if (selection.parentRootActionId) repository.activateRootForCommittedStage(selection.parentRootActionId, binding)
       }
+      if (selection.characterStateRebuild && selection.parentRootActionId) repository.activateRootForCommittedStage(selection.parentRootActionId, binding)
       if (batch) repository.activateRootForCommittedStage(batch.rootHandle.rootActionId, binding)
       if (reviewRevision?.parentRootActionId) repository.activateRootForCommittedStage(reviewRevision.parentRootActionId, binding)
       if (agentInitialization && selection.parentRootActionId) repository.activateRootForCommittedStage(selection.parentRootActionId, binding)
@@ -557,12 +563,13 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     return { outcome: finishReason === 'stop' ? { status: 'completed', content, finishReason, receipt: details }
       : { status: 'incomplete', content, finishReason, receipt: details }, run: viewOf(repository.get(receipt.run.runId)) }
   }
-  const execute = async (request: ExecuteGenerationRequest, agentExecution = false, importExecution = false, editorExecution = false, finalizationExecution = false, graphExecution = false, legacyExecution = false, shortOutlineRetryAttemptId?: string): Promise<MainGenerationExecuteReceipt> => {
+  const execute = async (request: ExecuteGenerationRequest, agentExecution = false, importExecution = false, editorExecution = false, finalizationExecution = false, graphExecution = false, legacyExecution = false, shortOutlineRetryAttemptId?: string, rebuildExecution = false): Promise<MainGenerationExecuteReceipt> => {
     const run = requireRun(request.handle, true)
     if (run.binding.sourceManifest.operation === 'agent-round' && !agentExecution) throw new Error('GENERATION_AGENT_ADMISSION_REQUIRED')
     if (run.binding.sourceManifest.importSlot && !importExecution) throw new Error('GENERATION_IMPORT_ADMISSION_REQUIRED')
     if (run.binding.sourceManifest.operation === 'editor-inline' && !editorExecution) throw new Error('GENERATION_EDITOR_ADMISSION_REQUIRED')
     if (['finalized-chapter-notes', 'finalized-character-state'].includes(run.binding.sourceManifest.operation as string) && !finalizationExecution) throw new Error('GENERATION_FINALIZATION_ADMISSION_REQUIRED')
+    if (run.binding.sourceManifest.operation === CHAPTER_CHARACTER_STATE_REBUILD_OPERATION && !rebuildExecution) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_ADMISSION_REQUIRED')
     if (Object.values(graphOperations).includes(run.binding.sourceManifest.operation as typeof graphOperations[keyof typeof graphOperations]) && !graphExecution) throw new Error('GENERATION_GRAPH_ADMISSION_REQUIRED')
     if (run.binding.sourceManifest.operation === 'legacy-character-roster-repair' && !legacyExecution) throw new Error('GENERATION_LEGACY_ADMISSION_REQUIRED')
     assertSemanticGenerationTask(request.task)
@@ -976,6 +983,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
   const legacyRosters = new LegacyRosterGeneration(deps.database, repository, deps.projectId, characters)
   const graphs = new GraphGeneration(deps.database, repository, deps.projectId)
   const finalizations = new FinalizationGeneration(deps.database, repository, deps.projectId, characters, deps.transferOrigin)
+  const rebuilds = new ChapterCharacterStateRebuild(deps.database, repository, deps.projectId, characters, deps.transferOrigin)
   const agents = new AgentGeneration(deps.database, repository, { projectId: deps.projectId, epoch: deps.epoch }, assertCurrent, {
     begin: selection => begin(selection, false, true), read: handle => viewOf(requireRun(handle)), resume,
     execute: (handle, invocationNonce, task) => execute({ handle, invocationNonce, task }, true),
@@ -1083,6 +1091,64 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     assertCurrent()
     if (repository.budget(run.rootActionId).root.status === 'cancelled') throw new Error('GENERATION_ACTION_CANCELLED')
     if (!compareGenerationSourceBindings(run.binding, deps.rebuildBinding(run.binding, currentModelReceipt(run.binding)))) throw new Error('GENERATION_SOURCE_CHANGED')
+  }
+  const openRebuildChapter = (rebuildId: string, plan: ChapterCharacterStateRebuildPlan,
+    chapter: ChapterCharacterStateRebuildPlan['chapters'][number], modelId: string, parentRootActionId?: string) => {
+    const prepared = finalizedCharacters.readContext(chapter.source.draftId)
+    if (!isDeepStrictEqual(prepared.context.source, chapter.source)) throw new Error('GENERATION_SOURCE_CHANGED')
+    const view = begin({
+      operation: CHAPTER_CHARACTER_STATE_REBUILD_OPERATION,
+      uiActionNonce: `chapter-character-state-rebuild:${rebuildId}:${chapter.source.finalizationId}`,
+      modelId, chapterNumber: chapter.source.chapterNumber, selectedDraftIds: [], selectedFinalizedDraftIds: [chapter.source.draftId],
+      promptKeys: ['update_character_cards'], skillStages: ['review'], output: 'structured-data',
+      authorInputs: [{ id: 'finalized-character-context', text: JSON.stringify(prepared.context) }],
+      ...(parentRootActionId ? { parentRootActionId } : {}), characterStateRebuild: { rebuildId, plan },
+    }, false, false, false, false, false, false, true)
+    return repository.get(view.handle.runId)
+  }
+  const executeRebuildChapter = async (initialRun: DurableGenerationRun): Promise<MainGenerationExecuteReceipt> => {
+    let run = rebuilds.require(handleOf(initialRun))
+    const context = rebuilds.readContext(run), task = rebuilds.task(run)
+    for (const attempt of runAttempts(run.runId).reverse()) {
+      const receipt = volatileReceipts.get(attempt.attemptId) ?? repository.receipt(attempt.attemptId)
+      if (['reserved', 'dispatch-marked'].includes(receipt.attempt.status)) {
+        const running = pending.get(JSON.stringify([run.runId, attempt.invocationNonce]))?.promise
+        if (running) return running
+      }
+      if (!receipt.failureCode && !receipt.unsavedTail && receipt.result?.finishReason === 'stop' && receipt.artifact) {
+        try {
+          parseFinalizedCharacterStateResponse(receipt.artifact.text, context.extraction.identity)
+          return outcomeOf(receipt, { purpose: attempt.purpose })
+        } catch { /* A later explicit retry may replace an invalid extraction in the same rebuild run. */ }
+      }
+    }
+    const ordinal = runAttempts(run.runId).length
+    const invocationNonce = `chapter-character-state-rebuild:${ordinal}`
+    const requestHash = textHash(JSON.stringify([task, run.binding.fingerprint.modelLeaseRevision, run.binding.fingerprint.policyHash]))
+    const prior = repository.findInvocation(run.runId, invocationNonce, requestHash)
+    if (prior) return pending.get(JSON.stringify([run.runId, invocationNonce]))?.promise ?? outcomeOf(prior, task)
+    const current = viewOf(run).nonReplayable ? await resume(handleOf(run)) : viewOf(run)
+    run = repository.get(current.handle.runId)
+    return execute({ handle: handleOf(run), invocationNonce, task }, false, false, false, false, false, false, undefined, true)
+  }
+  const runRebuild = async (rebuildId: string, plan: ChapterCharacterStateRebuildPlan, modelId: string, existingRoot?: string) => {
+    let rootActionId = existingRoot
+    for (const chapter of plan.chapters) {
+      if (rebuilds.snapshotFor(rebuildId, chapter.source.finalizationId)) continue
+      if (rootActionId && repository.budget(rootActionId).root.status === 'cancelled') break
+      if (rootActionId && !rebuilds.readStatus(rebuildId).canResume) throw new Error('GENERATION_SOURCE_CHANGED')
+      const run = rootActionId ? rebuilds.findChapterRun(rootActionId, chapter.source.finalizationId) : undefined
+      const current = run ?? openRebuildChapter(rebuildId, plan, chapter, modelId, rootActionId)
+      rootActionId = current.rootActionId
+      const result = await executeRebuildChapter(current)
+      if (result.outcome.status !== 'completed') break
+      const visibleArtifact = result.outcome.receipt.visibleArtifact
+      if (!visibleArtifact) break
+      const artifact = { artifactId: visibleArtifact.artifactId, revision: visibleArtifact.revision, textHash: visibleArtifact.textHash }
+      rebuilds.commit(handleOf(repository.get(current.runId)), artifact, assertFinalizationSources)
+    }
+    if (!rootActionId) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_NOT_FOUND')
+    return rebuilds.readStatus(rebuildId)
   }
   const graphRecovery = (run: DurableGenerationRun): GraphGenerationRecovery => {
     assertCurrent()
@@ -1516,6 +1582,45 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
       finalizedCharacters.compareStateSnapshots(beforeSnapshotId, afterSnapshotId, characterId),
     readChapterCharacterStateContinuity: () => finalizedCharacters.readStateContinuity(),
     readChapterCharacterStateCache: () => finalizedCharacters.readStateCache(),
+    planChapterCharacterStateRebuild: (request: { endChapter?: number }) => {
+      assertCurrent()
+      if (!request || Object.keys(request).some(key => key !== 'endChapter')) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_RANGE_INVALID')
+      return rebuilds.readPlan(request.endChapter)
+    },
+    listChapterCharacterStateRebuilds: () => { assertCurrent(); return rebuilds.listStatuses() },
+    beginChapterCharacterStateRebuild: async (request: { rebuildId: string; modelId: string; endChapter?: number }) => {
+      assertCurrent()
+      if (!request || Object.keys(request).some(key => !['rebuildId', 'modelId', 'endChapter'].includes(key)) || !request.modelId) {
+        throw new Error('GENERATION_CHARACTER_STATE_REBUILD_REQUEST_INVALID')
+      }
+      const existingRoot = rebuilds.findRoot(request.rebuildId)
+      if (existingRoot) {
+        const existing = rebuilds.readPlanForRoot(existingRoot)
+        if (existing.modelId !== request.modelId || request.endChapter !== undefined && request.endChapter !== existing.plan.range.endChapter) {
+          throw new Error('GENERATION_NONCE_CONFLICT')
+        }
+        return runRebuild(request.rebuildId, existing.plan, existing.modelId, existingRoot)
+      }
+      const plan = rebuilds.readPlan(request.endChapter)
+      if (!plan) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_NOT_REQUIRED')
+      return runRebuild(request.rebuildId, plan, request.modelId)
+    },
+    resumeChapterCharacterStateRebuild: async (request: { rebuildId: string }) => {
+      assertCurrent()
+      if (!request || Object.keys(request).some(key => key !== 'rebuildId')) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_REQUEST_INVALID')
+      const rootActionId = rebuilds.findRoot(request.rebuildId)
+      if (!rootActionId) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_NOT_FOUND')
+      const existing = rebuilds.readPlanForRoot(rootActionId)
+      return runRebuild(request.rebuildId, existing.plan, existing.modelId, rootActionId)
+    },
+    cancelChapterCharacterStateRebuild: (request: { rebuildId: string }) => {
+      assertCurrent()
+      if (!request || Object.keys(request).some(key => key !== 'rebuildId')) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_REQUEST_INVALID')
+      const rootActionId = rebuilds.findRoot(request.rebuildId)
+      if (!rootActionId) throw new Error('GENERATION_CHARACTER_STATE_REBUILD_NOT_FOUND')
+      service.cancel(rootActionId)
+      return rebuilds.readStatus(request.rebuildId)
+    },
     prepareReviewRevision: (request: PrepareReviewRevisionRequest) => reviewRevisions.prepare(request),
     commitReview: (request: ReviewGenerationCommitRequest) => reviewRevisions.commitReview(request, assertSourcesCurrent),
     commitRevision: (request: RevisionGenerationCommitRequest) => reviewRevisions.commitRevision(request, assertSourcesCurrent),

@@ -17,21 +17,25 @@ export function proveFinalizedCharacterGeneration(db: Database.Database, runs: G
   const run = runs.get(handle.runId)
   const currentHandle = { projectId: run.binding.projectId, epoch: run.binding.epoch, rootActionId: run.rootActionId, runId: run.runId }
   const manifest = run.binding.sourceManifest
-  const dedicated = ['finalizationGenerationContext', 'finalizationGenerationContextHash', 'finalizationGenerationOriginEpoch']
+  const rebuild = manifest.operation === 'chapter-character-state-rebuild'
+  const dedicated = rebuild || ['finalizationGenerationContext', 'finalizationGenerationContextHash', 'finalizationGenerationOriginEpoch']
     .some(key => Object.hasOwn(manifest, key))
   if (handle.projectId !== projectId || handle.projectId !== currentHandle.projectId || handle.rootActionId !== currentHandle.rootActionId
-    || manifest.operation !== 'finalized-character-state' || !dedicated && !isDeepStrictEqual(handle, currentHandle))
+    || !['finalized-character-state', 'chapter-character-state-rebuild'].includes(String(manifest.operation))
+    || !dedicated && !isDeepStrictEqual(handle, currentHandle))
     throw new Error('CHARACTER_PROPOSAL_SOURCE_INVALID')
   const inputs = run.binding.sourceManifest.authorInputs as GenerationAuthorInput[] | undefined
   const serialized = inputs?.find(input => input.id === 'finalized-character-context')?.text
-  if (!serialized || run.binding.sourceManifest.finalizedCharacterContextHash !== textHash(serialized))
+  if (!serialized || !rebuild && run.binding.sourceManifest.finalizedCharacterContextHash !== textHash(serialized))
     throw new Error('CHARACTER_PROPOSAL_CONTEXT_UNPROVEN')
   const context = JSON.parse(serialized) as FinalizedCharacterContext
   if (dedicated) {
-    const finalization = manifest.finalizationGenerationContext as FinalizationGenerationContext | undefined
-    const originEpoch = manifest.finalizationGenerationOriginEpoch
+    const rebuildContext = manifest.characterStateRebuild as { extraction?: FinalizationGenerationContext } | undefined
+    const finalization = rebuild ? rebuildContext?.extraction : manifest.finalizationGenerationContext as FinalizationGenerationContext | undefined
+    const originEpoch = rebuild ? finalization?.identity.epoch : manifest.finalizationGenerationOriginEpoch
     if (!finalization || typeof originEpoch !== 'string' || !originEpoch.trim()
-      || manifest.finalizationGenerationContextHash !== textHash(JSON.stringify(finalization))
+      || rebuild && (manifest.characterStateRebuildHash !== textHash(JSON.stringify(rebuildContext)) || serialized !== JSON.stringify(finalization.identity))
+      || !rebuild && manifest.finalizationGenerationContextHash !== textHash(JSON.stringify(finalization))
       || originEpoch !== context.epoch || !isDeepStrictEqual(finalization.identity, context)
       || finalization.slot?.stepKey !== 'character_cards' || !isDeepStrictEqual(finalization.slot.source, context.source)
       || context.characters.some(character => character.fields.some(field => field.projectId !== context.projectId

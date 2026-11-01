@@ -17,6 +17,7 @@ import { useLocaleStore } from '../../../../stores/locale-store'
 import { useStageStore, type StageSheet } from '../../../../stores/navigation/stage-store'
 import { useProjectStore } from '../../../../stores/project-store'
 import { useWorkflowStore, type WorkflowRun } from '../../../../stores/workflow-store'
+import { useLLMStore } from '../../../../stores/llm-store'
 import RunSheet from '../RunSheet'
 import { createProjectArchTabId } from '../../../editor/arch-file-refresh-policy'
 import { globalEventBus } from '../../../../shared/event-bus'
@@ -30,7 +31,7 @@ function snapshot<T>(store: StoreApi<T>): () => void {
   const state = store.getState()
   return () => store.setState(state, true)
 }
-const restores = [useProjectStore, useWorkflowStore, useStageStore, useLocaleStore, useLayoutStore, useEditorStore].map(store => snapshot(store as StoreApi<unknown>))
+const restores = [useProjectStore, useWorkflowStore, useStageStore, useLocaleStore, useLayoutStore, useEditorStore, useLLMStore].map(store => snapshot(store as StoreApi<unknown>))
 
 let root: Root | undefined
 let host: HTMLDivElement | undefined
@@ -82,6 +83,8 @@ beforeEach(() => {
     if (channel === 'generation:list-recovery') return { planning: [], editors: [], reviews: [], drafts: [], batches, partial: false }
     if (channel === 'finalized-character:read-state-continuity') return []
     if (channel === 'finalized-character:read-state-cache') return { status: 'ready', reason: null, snapshotId: null, source: null }
+    if (channel === 'finalized-character:plan-state-rebuild') return null
+    if (channel === 'finalized-character:list-state-rebuilds') return []
     if (channel === 'skills:list-user') return []
     if (channel === 'fs:check-exists') return false
     if (channel === 'db:recovery-candidate-resolve') return { success: true }
@@ -155,6 +158,77 @@ describe('运行侧页', () => {
     expect(host!.textContent).toContain('Invalidated range: chapters 3–4; previous snapshots are retained as history.')
     expect(host!.textContent).toContain('Chapter 4 is waiting for its predecessor')
     expect(host!.textContent).toContain('Cache rebuild required')
+  })
+
+  it('重建前确认范围、章节和模型，确认后才发起重建', async () => {
+    const source = (chapterNumber: number) => ({ draftId: chapterNumber, finalizationId: `final-${chapterNumber}`,
+      chapterNumber, contentHash: 'a'.repeat(64) })
+    const chapters = [2, 3].map(chapterNumber => ({ source: source(chapterNumber), chapterTitle: chapterNumber === 2 ? '南桥' : '雾港' }))
+    let runs: Array<Record<string, unknown>> = []
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'finalized-character:plan-state-rebuild') return { range: { startChapter: 2, endChapter: 3 }, chapters }
+      if (channel === 'finalized-character:list-state-rebuilds') return runs
+      if (channel === 'finalized-character:begin-state-rebuild') {
+        runs = [{ rebuildId: (args[0] as { rebuildId: string }).rebuildId, modelId: 'm1', range: { startChapter: 2, endChapter: 3 },
+          status: 'completed', sourceStatus: 'current', completedChapters: 2, nextChapterNumber: null, canResume: false,
+          chapters: chapters.map(chapter => ({ ...chapter, status: 'completed', snapshotId: `snapshot-${chapter.source.chapterNumber}`, inputHash: 'c'.repeat(64), predecessor: null })),
+          cache: { status: 'ready', reason: null, snapshotId: 'snapshot-3', source: source(3) } }]
+        return runs[0]
+      }
+      return base(channel, ...args)
+    })
+    useLLMStore.setState({ models: [{ id: 'm1', name: '夹具模型', modelName: 'fixture', purposes: ['generation'] }], defaultModelId: 'm1' } as never)
+    await render()
+    await vi.waitFor(() => expect(button('重建章节状态…')).toBeTruthy())
+    expect(invoke.mock.calls.some(([channel]) => channel === 'finalized-character:begin-state-rebuild')).toBe(false)
+
+    await click('重建章节状态…')
+    expect(host!.textContent).toContain('重建范围：第 2 至 3 章')
+    expect(host!.textContent).toContain('南桥、雾港')
+    expect(host!.textContent).toContain('将重新提取 2 章并逐章调用模型')
+    expect(host!.querySelector<HTMLSelectElement>('select')?.value).toBe('m1')
+    expect(document.activeElement?.textContent).toBe('取消')
+    await click('确认重建并调用模型')
+
+    await vi.waitFor(() => expect(host!.textContent).toContain('已完成 2/2 章'))
+    const call = invoke.mock.calls.find(([channel]) => channel === 'finalized-character:begin-state-rebuild')!
+    expect(call[1]).toMatchObject({ modelId: 'm1', endChapter: 3, rebuildId: expect.any(String) })
+    expect(call[2]).toEqual(session)
+  })
+
+  it('失败重建显示断点，只有显式继续才恢复同一运行', async () => {
+    const source = (chapterNumber: number) => ({ draftId: chapterNumber, finalizationId: `final-${chapterNumber}`,
+      chapterNumber, contentHash: 'a'.repeat(64) })
+    const chapters = [1, 2, 3].map(chapterNumber => ({ source: source(chapterNumber), chapterTitle: `第${chapterNumber}章` }))
+    const failed = { rebuildId: 'rebuild-failed', modelId: 'm1', range: { startChapter: 1, endChapter: 3 },
+      status: 'failed', sourceStatus: 'current', completedChapters: 1, nextChapterNumber: 2, canResume: true,
+      chapters: chapters.map((chapter, index) => ({ ...chapter, status: index === 0 ? 'completed' : index === 1 ? 'failed' : 'pending',
+        snapshotId: index === 0 ? 'snapshot-1' : null, inputHash: index === 0 ? 'c'.repeat(64) : null, predecessor: null })),
+      cache: { status: 'invalid', reason: 'continuity-incomplete', snapshotId: null, source: null } }
+    let current: Record<string, unknown> = failed
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'finalized-character:list-state-rebuilds') return [current]
+      if (channel === 'finalized-character:resume-state-rebuild') {
+        current = { ...failed, status: 'completed', completedChapters: 3, nextChapterNumber: null, canResume: false,
+          chapters: failed.chapters.map(chapter => ({ ...chapter, status: 'completed' })) }
+        return current
+      }
+      return base(channel, ...args)
+    })
+    await render()
+    await vi.waitFor(() => expect(button('从第 2 章继续重建')).toBeTruthy())
+    expect(host!.textContent).toContain('已完成 1/3 章')
+    expect(host!.textContent).toContain('断点：下一章为第 2 章')
+    expect(invoke.mock.calls.some(([channel]) => channel === 'finalized-character:resume-state-rebuild')).toBe(false)
+
+    await click('从第 2 章继续重建')
+    await vi.waitFor(() => expect(host!.textContent).toContain('已完成 3/3 章'))
+    expect(invoke.mock.calls.find(([channel]) => channel === 'finalized-character:resume-state-rebuild')).toEqual([
+      'finalized-character:resume-state-rebuild', { rebuildId: 'rebuild-failed' }, session,
+    ])
+    expect(invoke.mock.calls.some(([channel]) => channel === 'finalized-character:begin-state-rebuild')).toBe(false)
   })
 
   it('三个分页：进行中看运行，历史列出结束的运行并展开看步骤，诊断是宽版', async () => {
@@ -454,6 +528,7 @@ describe('运行侧页', () => {
     await vi.waitFor(() => expect(titles()).toEqual(['第8章候选']))
     expect(invoke.mock.calls.map(([channel]) => channel).filter(channel => ![
       'generation:list-recovery', 'db:recovery-candidate-list', 'finalized-character:read-state-continuity', 'finalized-character:read-state-cache',
+      'finalized-character:plan-state-rebuild', 'finalized-character:list-state-rebuilds',
     ].includes(channel))).toEqual([])
   })
 
