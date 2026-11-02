@@ -21,12 +21,27 @@ import { shelfTime } from './shelf-format'
 import { barsFromOverview, barsFromStages, nextStep } from './shelf-progress'
 import { useShelfOverview, type ShelfBook as Book } from './use-shelf-overview'
 import { pluralEn } from '../../../shared/plural-en'
+import { displayedErrorMessage } from '../../../i18n/app-errors'
+import { alertError } from '../../ui/AlertDialog'
 
 type Text = (zh: string, en: string) => string
 
 async function openProjectFolder(): Promise<void> {
   const folder = await ipc.invoke('dialog:select-folder', 'project-open')
   if (folder) await useProjectStore.getState().openProject(folder)
+}
+
+async function openBookFolder(book: Book): Promise<void> {
+  const { locale, text } = useLocaleStore.getState()
+  const title = text('无法打开作品文件夹', 'Could not open the book folder')
+  const fallback = text('无法打开作品文件夹，请重试。', 'The book folder could not be opened. Try again.')
+  try {
+    const result = await ipc.invoke('project:open-folder', book.path)
+    if (result.success) return
+    await alertError(displayedErrorMessage(locale, result.error, fallback), { title })
+  } catch (error) {
+    await alertError(displayedErrorMessage(locale, error, fallback), { title })
+  }
 }
 
 function heading(now: Date, text: Text): string {
@@ -127,6 +142,7 @@ export default function StageLibrary() {
       book.current
         ? { id: 'continue', label: text('回到作品', 'Back to the book'), onSelect: () => navigate({ kind: 'stage' }) }
         : { id: 'open', label: text('打开作品', 'Open book'), onSelect: book.onOpen },
+      { id: 'open-folder', label: text('打开作品文件夹', 'Open book folder'), onSelect: () => void openBookFolder(book) },
       { id: 'remove', label: text('从最近项目移除…', 'Remove from recent…'), onSelect: () => setRemoving(book) },
     ] },
     { id: 'danger', tone: 'danger', items: [book.current && currentProject

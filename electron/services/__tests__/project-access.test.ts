@@ -80,6 +80,31 @@ afterEach(() => {
   }
 })
 
+describe('ProjectAccessService recent project folder', () => {
+  it('resolves an existing directory for a legacy recent record and reports a missing directory', () => {
+    const root = makeProjectRoot()
+    const access = new ProjectAccessService()
+    fs.rmSync(path.join(root, PROJECT_MANIFEST_RELATIVE_PATH))
+
+    expect(access.resolveRecentProjectFolder(root)).toBe(fs.realpathSync.native(root))
+    fs.rmSync(root, { recursive: true, force: true })
+    expect(() => access.resolveRecentProjectFolder(root)).toThrow('PROJECT_DIRECTORY_MISSING')
+  })
+
+  it('rejects only a positively different identity and still opens an unreadable manifest', () => {
+    const root = makeProjectRoot()
+    const access = new ProjectAccessService()
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const otherProjectId = '22222222-2222-4222-8222-222222222222'
+    const manifestPath = path.join(root, PROJECT_MANIFEST_RELATIVE_PATH)
+
+    expect(access.resolveRecentProjectFolder(root, projectId)).toBe(fs.realpathSync.native(root))
+    expect(() => access.resolveRecentProjectFolder(root, otherProjectId)).toThrow('PROJECT_OPEN_RECENT_IDENTITY_CHANGED')
+    fs.writeFileSync(manifestPath, '{damaged', 'utf8')
+    expect(access.resolveRecentProjectFolder(root, otherProjectId)).toBe(fs.realpathSync.native(root))
+  })
+})
+
 describe('ProjectAccessService project session seam', () => {
   it('rejects a Windows project whose derived native storage path is unsafe before creating the project root', () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-novel-storage-preflight-'))

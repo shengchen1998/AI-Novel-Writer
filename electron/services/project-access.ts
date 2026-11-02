@@ -227,6 +227,22 @@ export class ProjectAccessService {
     throw new Error('PROJECT_MIGRATION_NOT_QUALIFIED')
   }
 
+  /** 系统文件管理器只解析最近作品目录；身份不可读时仍允许检查文件，明确换成其他作品才拒绝。 */
+  resolveRecentProjectFolder(candidatePath: string, expectedProjectId?: string): string {
+    const rootPath = this.canonicalProjectRoot(candidatePath)
+    if (!expectedProjectId) return rootPath
+    let project: ProjectProbe
+    try {
+      project = this.probeExistingProject(rootPath)
+    } catch {
+      return rootPath
+    }
+    if (project.kind === 'manifest' && project.projectId !== expectedProjectId) {
+      throw new Error('PROJECT_OPEN_RECENT_IDENTITY_CHANGED')
+    }
+    return project.rootPath
+  }
+
   beginSession(project: TrustedProject): ProjectSessionLease {
     const lease: ProjectSessionLease = {
       ...project,
