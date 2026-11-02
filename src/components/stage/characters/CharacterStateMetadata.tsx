@@ -29,13 +29,19 @@ export function CharacterStateImpact({ character }: { character: ChapterCharacte
   return <span className="cast-history-impact">{label}</span>
 }
 
-export function CharacterStateFieldContent({ field, characterId, finalizationId, pendingCandidates }: {
+export function CharacterStateFieldContent({ field, allFields, characterId, finalizationId, pendingCandidates }: {
   field: ChapterCharacterStateSnapshotField
+  allFields: readonly ChapterCharacterStateSnapshotField[]
   characterId: string
   finalizationId: string
   pendingCandidates: PendingFinalizedCharacterStateCandidateSummary[]
 }) {
   const text = useLocaleStore(s => s.text)
+  const evidenceKey = (candidate: ChapterCharacterStateSnapshotField) => candidate.evidence
+    ? `${candidate.evidence.start}:${candidate.evidence.end}:${candidate.evidence.text}` : null
+  const sharedFields = field.evidence ? CHARACTER_STATE_FIELDS.filter(([name]) => allFields.some(candidate =>
+    candidate.field === name && evidenceKey(candidate) === evidenceKey(field))) : []
+  const showEvidence = sharedFields.at(-1)?.[0] === field.field
   const sourceLabel = field.provenance.kind === 'author'
     ? text('作者输入', 'Author input')
     : field.provenance.kind === 'derived'
@@ -57,9 +63,15 @@ export function CharacterStateFieldContent({ field, characterId, finalizationId,
       {field.provenance.kind === 'derived' && (
         <p className="cast-history-field-source"><code>{field.provenance.source.finalizationId}</code></p>
       )}
-      {field.evidence && (
+      {field.evidence && showEvidence && (
         <div className="cast-history-evidence">
           <h4>{text('正文证据', 'Finalized prose evidence')}</h4>
+          {sharedFields.length > 1 && (
+            <p className="cast-history-meta cast-history-evidence-shared">{text(
+              `共用字段：${sharedFields.map(([, zh]) => zh).join('、')}`,
+              `Shared by: ${sharedFields.map(([, , en]) => en).join(', ')}`,
+            )}</p>
+          )}
           <blockquote>{field.evidence.text}</blockquote>
         </div>
       )}

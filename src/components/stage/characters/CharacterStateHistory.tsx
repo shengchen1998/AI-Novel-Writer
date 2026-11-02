@@ -173,7 +173,7 @@ export default function CharacterStateHistory({ characterId }: { characterId: st
                 return (
                   <section key={field} className="cast-history-field" aria-label={text(zh, en)}>
                     <h3>{text(zh, en)}</h3>
-                    <CharacterStateFieldContent field={snapshotField} characterId={characterId}
+                    <CharacterStateFieldContent field={snapshotField} allFields={detail.character.fields} characterId={characterId}
                       finalizationId={detail.source.finalizationId} pendingCandidates={pendingCandidates} />
                   </section>
                 )

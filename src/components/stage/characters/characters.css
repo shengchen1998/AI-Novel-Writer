@@ -663,6 +663,10 @@
   border-top: 1px solid var(--rule);
 }
 
+.cast-history-evidence-shared {
+  margin: 0 0 var(--s-2);
+}
+
 .cast-history-evidence blockquote {
   margin: 0;
   color: var(--ink-2);

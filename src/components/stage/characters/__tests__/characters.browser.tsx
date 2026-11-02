@@ -542,17 +542,14 @@ describe('角色名单', () => {
         involved: true, changedFields: ['physicalState'],
       },
     }
+    const evidence = { start: 0, end: 6, text: '林舟在北塔受伤' }
     const fields = [
       { field: 'location', value: '旧站', provenance: { kind: 'author', chapterNumber: 0 }, knownAtChapter: 0 },
       { field: 'powerLevel', value: '', provenance: { kind: 'legacy' }, knownAtChapter: null },
-      {
-        field: 'physicalState', value: '受伤', knownAtChapter: 1,
-        provenance: { kind: 'derived', source },
-        evidence: { start: 0, end: 6, text: '林舟在北塔受伤' },
-      },
-      { field: 'mentalState', value: '警觉', provenance: { kind: 'legacy' }, knownAtChapter: null },
+      { field: 'physicalState', value: '受伤', knownAtChapter: 1, provenance: { kind: 'derived', source }, evidence },
+      { field: 'mentalState', value: '警觉', knownAtChapter: 1, provenance: { kind: 'derived', source }, evidence },
       { field: 'keyItems', value: '黄铜钥匙', provenance: { kind: 'author', chapterNumber: 1 }, knownAtChapter: 1 },
-      { field: 'recentEvents', value: '抵达北塔', provenance: { kind: 'derived', source }, knownAtChapter: 1 },
+      { field: 'recentEvents', value: '抵达北塔', provenance: { kind: 'derived', source }, knownAtChapter: 1, evidence },
     ]
     const base = invoke.getMockImplementation()!
     invoke.mockImplementation(async (channel, ...args) => {
@@ -583,6 +580,11 @@ describe('角色名单', () => {
 
     await click(/第 1 章 · 北塔/)
     await vi.waitFor(() => expect(host!.textContent).toContain('林舟在北塔受伤'))
+    const historyDetail = host!.querySelector('.cast-history-detail')!
+    const evidenceBlocks = historyDetail.querySelectorAll('.cast-history-evidence')
+    expect(evidenceBlocks).toHaveLength(1)
+    expect(evidenceBlocks[0]!.textContent).toContain('共用字段：身体状态（伤势/BUFF/外貌）、心理状态（愿望/恐惧/心态）、最近重要事件')
+    expect(historyDetail.querySelector('[aria-label="最近重要事件"]')!.contains(evidenceBlocks[0]!)).toBe(true)
     expect(invoke.mock.calls.find(([channel]) => channel === 'finalized-character:read-state-snapshot')?.[1])
       .toEqual({ snapshotId: 'snapshot-1', characterId: linzhou.characterId })
     expect(host!.textContent).toContain('final-1')
@@ -607,6 +609,7 @@ describe('角色名单', () => {
     expect(host!.textContent).toContain('Unknown source')
     expect(host!.textContent).toContain('Known at chapter 1')
     expect(host!.textContent).toContain('Finalized prose evidence')
+    expect(host!.textContent).toContain('Shared by: Physical state (injuries, effects, appearance), Mental state (goals, fears, mindset), Recent important events')
     expect(host!.textContent).toContain('Invalid snapshot')
     expect(host!.textContent).toContain('Cache rebuild required')
     expect(host!.textContent).toContain('Pending confirmation')

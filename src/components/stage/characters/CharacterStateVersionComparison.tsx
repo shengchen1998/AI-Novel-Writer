@@ -39,10 +39,11 @@ export default function CharacterStateVersionComparison({ characterId, summaries
     `第 ${summary.source.chapterNumber} 章 · ${summary.chapterTitle} · ${summary.source.finalizationId}`,
     `Chapter ${summary.source.chapterNumber} · ${summary.chapterTitle} · ${summary.source.finalizationId}`,
   )
-  const renderField = (label: string, field: ChapterCharacterStateSnapshotField, finalizationId: string) => (
+  const renderField = (label: string, field: ChapterCharacterStateSnapshotField, allFields: readonly ChapterCharacterStateSnapshotField[],
+    finalizationId: string) => (
     <div className="cast-history-diff-side">
       <h4>{label}</h4>
-      <CharacterStateFieldContent field={field} characterId={characterId}
+      <CharacterStateFieldContent field={field} allFields={allFields} characterId={characterId}
         finalizationId={finalizationId} pendingCandidates={pendingCandidates} />
     </div>
   )
@@ -90,8 +91,10 @@ export default function CharacterStateVersionComparison({ characterId, summaries
                   aria-label={text(`${zh}差异`, `${en} difference`)}>
                   <h3>{text(zh, en)} · {changeLabel}</h3>
                   <div className="cast-history-diff-sides">
-                    {renderField(text('起点', 'From'), fieldDiff.before, diff.before.source.finalizationId)}
-                    {renderField(text('终点', 'To'), fieldDiff.after, diff.after.source.finalizationId)}
+                    {renderField(text('起点', 'From'), fieldDiff.before, diff.fields.map(candidate => candidate.before),
+                      diff.before.source.finalizationId)}
+                    {renderField(text('终点', 'To'), fieldDiff.after, diff.fields.map(candidate => candidate.after),
+                      diff.after.source.finalizationId)}
                   </div>
                 </section>
               )
