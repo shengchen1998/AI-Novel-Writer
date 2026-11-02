@@ -21,6 +21,7 @@ export const zhCN = {
   'error.projectManifestInvalid': '项目清单文件已损坏或无法读取，已拒绝打开。请保留原文件夹，从备份恢复。',
   'error.projectOpenGrantRequired': '这个项目文件夹的访问授权已失效，请重新选择项目目录。',
   'error.projectRecentIdentityChanged': '最近项目里记录的位置现在是另一个项目，请重新选择项目目录。',
+  'error.projectFolderOpenFailed': '无法打开作品文件夹。请确认系统文件管理器可用，然后重试。',
   'error.projectMigrationNotQualified': '项目格式转换尚未具备安全迁移条件，已保留原项目且未写入。请通过“导入旧项目”创建完整副本。',
   'error.projectSchemaUnrecognized': '无法识别项目格式，已拒绝打开。请核查创建该项目的软件和版本。',
   'error.projectSchemaCorrupt': '项目数据结构已损坏，已拒绝打开。请保留原件并从备份恢复。',

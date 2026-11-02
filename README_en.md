@@ -48,7 +48,7 @@ Pagekin works in the order a novel gets written: you are the author, it is your 
 
 ### Library: all your books in one place
 
-The library lists every book you have written. Select a cover to preview it: the current step, word count, final chapters, and characters. You can start a new book or import a copy of a project from an older version.
+The library lists every book you have written. Select a cover to preview it: the current step, word count, final chapters, and characters. You can start a new book or import a copy of a project from an older version. Each book's More menu also includes Open book folder to open its project folder in the system file manager without switching the current book or changing the shelf order.
 
 ![Library with two books on the shelf and the preview and progress of "Lighthouse" on the right](docs/assets/readme/v130-en-library.webp)
 

@@ -405,6 +405,10 @@ export interface ProjectChannels {
     args: [projectPath: string]
     return: { success: boolean; error?: string }
   }
+  'project:open-folder': {
+    args: [projectPath: string]
+    return: { success: boolean; error?: string }
+  }
   'project:archive-export': {
     args: [request: PortableProjectExportRequest]
     return: { success: true; receipt: PortableProjectExportReceipt } | PortableProjectOperationFailure

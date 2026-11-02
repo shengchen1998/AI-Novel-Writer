@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   rmSync: vi.fn(),
   removeDirectoryWithWindowsRetry: vi.fn(),
   showMessageBox: vi.fn(),
+  openPath: vi.fn(),
   importLegacyProjectCopy: vi.fn(),
   repairDuplicateFinalizations: vi.fn(),
   resolveExactPath: vi.fn(),
@@ -35,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   projectAccess: {
     createProject: vi.fn(),
     probeExistingProject: vi.fn(),
+    resolveRecentProjectFolder: vi.fn(),
     adoptLegacyProject: vi.fn(),
     beginSession: vi.fn(),
     captureCurrentSession: vi.fn(),
@@ -73,6 +75,7 @@ vi.mock('electron', () => ({
       mocks.handlers.set(channel, handler)
     }),
   },
+  shell: { openPath: mocks.openPath },
 }))
 
 vi.mock('node:fs', () => ({
@@ -259,6 +262,7 @@ beforeEach(() => {
   })
   mocks.rmSync.mockImplementation(() => undefined)
   mocks.removeDirectoryWithWindowsRetry.mockImplementation(async () => undefined)
+  mocks.openPath.mockResolvedValue('')
   mocks.writeJsonFile.mockImplementation((_target: string, data: unknown) => {
     mocks.recentProjects = data as Array<{ name: string; path: string; updatedAt: string; projectId?: string }>
   })
@@ -272,6 +276,7 @@ beforeEach(() => {
     projectId: `project-${path.basename(projectPath)}`,
     rootPath: path.resolve(projectPath),
   }))
+  mocks.projectAccess.resolveRecentProjectFolder.mockImplementation((projectPath: string) => path.resolve(projectPath))
   mocks.projectAccess.adoptLegacyProject.mockImplementation((project: unknown) => project)
   mocks.projectAccess.beginSession.mockImplementation((project: {
     projectId: string
@@ -418,6 +423,41 @@ describe('project controller project identity', () => {
       .resolves.toMatchObject({ success: false })
     expect(mocks.initCalls).not.toContain(projectD)
   })
+  it('opens only main-owned recent folders without changing recent metadata', async () => {
+    mocks.recentProjects = [{ name: 'B', path: projectB, updatedAt: '2026-09-21T00:00:00.000Z', projectId: 'project-B' }]
+
+    await expect(handler('project:open-folder')({}, ordinaryDirectory)).resolves.toEqual({
+      success: false,
+      error: 'PROJECT_OPEN_GRANT_REQUIRED',
+    })
+    expect(mocks.projectAccess.resolveRecentProjectFolder).not.toHaveBeenCalled()
+    expect(mocks.openPath).not.toHaveBeenCalled()
+
+    await expect(handler('project:open-folder')({}, projectB)).resolves.toEqual({ success: true })
+    expect(mocks.projectAccess.resolveRecentProjectFolder).toHaveBeenCalledWith(projectB, 'project-B')
+    expect(mocks.openPath).toHaveBeenCalledWith(projectB)
+    expect(mocks.writeJsonFile).not.toHaveBeenCalled()
+  })
+
+  it('preserves project folder errors and localizes file-manager failures with a stable code', async () => {
+    mocks.recentProjects = [{ name: 'B', path: projectB, updatedAt: '', projectId: 'project-B' }]
+    mocks.projectAccess.resolveRecentProjectFolder.mockImplementation(() => {
+      throw new Error('PROJECT_DIRECTORY_MISSING')
+    })
+    await expect(handler('project:open-folder')({}, projectB)).resolves.toEqual({
+      success: false,
+      error: 'PROJECT_DIRECTORY_MISSING',
+    })
+    expect(mocks.openPath).not.toHaveBeenCalled()
+
+    mocks.projectAccess.resolveRecentProjectFolder.mockReturnValue(projectB)
+    mocks.openPath.mockResolvedValue('The file manager is unavailable')
+    await expect(handler('project:open-folder')({}, projectB)).resolves.toEqual({
+      success: false,
+      error: 'PROJECT_FOLDER_OPEN_FAILED',
+    })
+  })
+
   it('issues opaque preview capabilities for valid recent projects', async () => {
     mocks.recentProjects = [{ name: 'Project B', path: projectB, updatedAt: '2026-09-21T00:00:00.000Z' }]
 

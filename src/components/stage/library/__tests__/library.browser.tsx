@@ -10,6 +10,7 @@ import { setActiveProjectSessionContext } from '../../../../shared/project-sessi
 import { useDraftStore } from '../../../../stores/draft-store'
 import { useEditorStore } from '../../../../stores/editor-store'
 import { useLayoutStore } from '../../../../stores/layout-store'
+import { useLocaleStore } from '../../../../stores/locale-store'
 import { useLLMStore } from '../../../../stores/llm-store'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
 import { useProjectStore } from '../../../../stores/project-store'
@@ -70,7 +71,8 @@ async function click(element: HTMLElement | undefined) {
 }
 
 async function chooseFromBookMenu(book: string, item: string) {
-  await click(button(`《${book}》更多操作`))
+  const trigger = useLocaleStore.getState().locale === 'en-US' ? `More for “${book}”` : `《${book}》更多操作`
+  await click(button(trigger))
   const menuItem = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(candidate => candidate.textContent === item)
   return menuItem
 }
@@ -94,6 +96,7 @@ beforeEach(async () => {
   })
   win.aiNovelAPI = { invoke, on: () => () => undefined }
   useLayoutStore.setState({ sidebarView: 'home' })
+  useLocaleStore.setState({ locale: 'zh-CN' })
   useStageStore.setState({ work: null, spineFacts: null })
   useLLMStore.setState({ loaded: true, defaultModelId: 'model' })
   useProjectStore.setState({
@@ -166,6 +169,53 @@ describe('书房', () => {
   })
 
   const overviewOf = (name: string) => host!.querySelector<HTMLElement>(`[aria-label="《${name}》概览"]`)
+
+  it('每部作品都能打开文件夹，预览、当前作品和最近记录保持不变', async () => {
+    openCurrent()
+    useProjectStore.setState({ recentProjects: [LIGHTHOUSE, ISLAND] })
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => channel === 'project:open-folder'
+      ? { success: true }
+      : base(channel, ...args))
+    await mount()
+    await click(button('预览《雾岛》'))
+    await vi.waitFor(() => expect(overviewOf('雾岛')?.getAttribute('aria-busy')).toBe('false'))
+    const recentBefore = useProjectStore.getState().recentProjects
+
+    await click(button('《雾岛》更多操作'))
+    const items = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+    expect(items.map(item => item.textContent)).toEqual(['打开作品', '打开作品文件夹', '从最近项目移除…', '删除作品（先打开这部作品）'])
+    await click(items.find(item => item.textContent === '打开作品文件夹'))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('project:open-folder', ISLAND.path))
+    await click(await chooseFromBookMenu('灯塔', '打开作品文件夹'))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('project:open-folder', LIGHTHOUSE.path))
+
+    expect(useProjectStore.getState().currentProject?.id).toBe('lighthouse')
+    expect(useProjectStore.getState().recentProjects).toEqual(recentBefore)
+    expect(useProjectStore.getState().openProject).not.toHaveBeenCalled()
+    expect(button('预览《雾岛》')?.getAttribute('aria-pressed')).toBe('true')
+    expect(overviewOf('雾岛')).not.toBeNull()
+  })
+
+  it.each([
+    ['zh-CN', '打开作品文件夹', '无法打开作品文件夹', '找不到这个项目文件夹，它可能已被移动、改名或删除。请重新选择项目文件夹。', '确定'],
+    ['en-US', 'Open book folder', 'Could not open the book folder', 'The project folder could not be found. It may have been moved, renamed, or deleted. Choose the project folder again.', 'OK'],
+  ] as const)('%s 界面：目录不存在时说明原因并保留最近记录', async (locale, label, title, message, confirmLabel) => {
+    useLocaleStore.setState({ locale })
+    useProjectStore.setState({ recentProjects: [ISLAND] })
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => channel === 'project:open-folder'
+      ? { success: false, error: 'PROJECT_DIRECTORY_MISSING' }
+      : base(channel, ...args))
+    await mount()
+    const recentBefore = useProjectStore.getState().recentProjects
+
+    await click(await chooseFromBookMenu('雾岛', label))
+    await vi.waitFor(() => expect(dialog(title)?.textContent).toContain(message))
+    expect(useProjectStore.getState().recentProjects).toEqual(recentBefore)
+    await click(button(confirmLabel))
+    await vi.waitFor(() => expect(dialog(title)).toBeUndefined())
+  })
 
   it('预览别的书后回到当前作品，概览重新显示当前作品，不停在正在读取', async () => {
     openCurrent()

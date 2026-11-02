@@ -19,6 +19,7 @@ export const enUS = {
   'error.projectManifestInvalid': 'The project manifest file is damaged or unreadable, so the project was not opened. Keep the original folder and restore from a backup.',
   'error.projectOpenGrantRequired': 'Access to this project folder has expired. Choose the project folder again.',
   'error.projectRecentIdentityChanged': 'The location saved in recent projects now holds a different project. Choose the project folder again.',
+  'error.projectFolderOpenFailed': 'The book folder could not be opened. Check that your system file manager is available, then try again.',
   'error.projectMigrationNotQualified': 'This project cannot be converted safely yet. The original was kept and nothing was written. Use Import legacy project to create a complete copy.',
   'error.projectSchemaUnrecognized': 'The project format is not recognized, so it was not opened. Check which app and version created it.',
   'error.projectSchemaCorrupt': 'The project data structure is damaged, so it was not opened. Keep the original and restore from a backup.',

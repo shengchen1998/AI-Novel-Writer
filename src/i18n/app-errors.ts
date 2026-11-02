@@ -44,6 +44,7 @@ const ERROR_KEYS = {
   SOURCE_CHANGED_SINCE_PROBE: 'error.projectChangedDuringOpen',
   LEGACY_IMPORT_UNSUPPORTED_SOURCE: 'error.legacyImportUnsupportedSource',
   PROJECT_DELETE_FAILED: 'error.projectDeleteFailed',
+  PROJECT_FOLDER_OPEN_FAILED: 'error.projectFolderOpenFailed',
   PROJECT_RECENT_LIST_UPDATE_FAILED: 'error.projectRecentListUpdateFailed',
   PROJECT_ARCHIVE_TARGET_EXISTS: 'error.projectArchiveTargetExists',
   // 选择文件或文件夹后授权已过期、用尽或被撤销（例如选完很久才确认）。
