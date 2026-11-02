@@ -75,8 +75,10 @@
 
 .stage-ch-version-chip {
   display: inline-flex;
+  flex: none;
   align-items: center;
   height: 28px;
+  white-space: nowrap;
   padding: 0 10px;
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius);
