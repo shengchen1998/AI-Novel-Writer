@@ -44,6 +44,7 @@ describe('worktree hygiene ignore contract', () => {
 
   it('does not hide source, evidence, or cloud qualification definitions', () => {
     const protectedPaths = [
+      'AGENTS.md',
       'src/components/stage/StageWorkspace.tsx',
       'docs/adr/0001-project-root-and-session-lease.md',
       'README.md',

@@ -16,7 +16,7 @@
 - `docs/README.md` 是文档导航。V3 写作流程、模型兼容或大规模界面任务还需阅读其中的现行规格索引及适用修订；冻结计划里的任务状态不等于当前进度。
 - 界面结构和组件规则分别见 `docs/design/2026-10-11-frontend-redesign/ia.md` 与同目录 `design-system.md`。
 - 用户可见行为变化应同步更新 `README.md`、`README_zh.md` 和 `README_en.md`，保持中英文范围一致。
-- 根目录 `AGENTS.md`、`CONTEXT.md` 是被 Git 忽略的本机上下文，不是公共产品规范，也不能覆盖领域词汇或已接受 ADR。
+- 根目录 `AGENTS.md` 是入库的公共开发指南；`CONTEXT.md` 是被 Git 忽略的本机上下文。两者都不能覆盖产品领域词汇或已接受 ADR。
 - 贡献流程以 Issue 为先，一个 PR 解决一个问题。提交说明应包含实际运行的检查、人工验证和未运行项，详见 `CONTRIBUTING.md`。
 
 ## 技术栈与运行时架构

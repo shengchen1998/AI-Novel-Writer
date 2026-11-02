@@ -52,7 +52,6 @@ tailwind.config.js.bak
 .vibe-owner.json
 
 # Never publish internal agent instructions, local review output, or compiler state.
-#/AGENTS.md
 /CONTEXT.md
 /.agents/
 /.claude/

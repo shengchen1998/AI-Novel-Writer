@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const prohibitedPaths = [
-  'AGENTS.md',
   'CONTEXT.md',
   'design-qa.md',
   'rule.md',
@@ -20,11 +19,14 @@ describe('public repository hygiene', () => {
     }
   })
 
+  it('keeps public agent guidance in every checkout', () => {
+    expect(existsSync('AGENTS.md')).toBe(true)
+  })
+
   it('ignores prohibited local material before it can be staged', () => {
     const rootGitignore = readFileSync('.gitignore', 'utf8')
 
     for (const entry of [
-      '/AGENTS.md',
       '/CONTEXT.md',
       '/docs/superpowers/',
       '/output/',
