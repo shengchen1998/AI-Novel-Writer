@@ -36,3 +36,24 @@ it('章节头的定位按界面语言显示：内置定位在英文界面译出�
   expect(await eyebrow('en-US', '暗线回收')).toBe('Chapter 3 · 暗线回收')
   expect(await eyebrow('zh-CN', '发展')).toBe('第 3 章 · 发展')
 })
+
+it('长标题不会把作者提供标签挤成多行', async () => {
+  host!.style.width = '480px'
+  await act(async () => root!.render(
+    <ChapterHead
+      chapterNumber={1}
+      title="强势审讯与杂物室伏击"
+      version={<>
+        <span className="pi-btn pi-btn--secondary pi-btn--sm stage-ch-version">定稿 · 3,495 字</span>
+        <span className="stage-ch-version-chip">作者提供</span>
+      </>}
+      step={3}
+      focus={false}
+    />,
+  ))
+
+  const chip = host!.querySelector('.stage-ch-version-chip')!
+  const range = document.createRange()
+  range.selectNodeContents(chip)
+  expect(range.getClientRects()).toHaveLength(1)
+})
