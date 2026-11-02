@@ -1,4 +1,4 @@
-import { app, ipcMain, dialog } from 'electron'
+import { app, ipcMain, dialog, shell } from 'electron'
 import { showOpenDialogInLastDirectory } from '../utils/remembered-dialog'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -900,6 +900,25 @@ export function registerProjectController(options: ProjectControllerOptions = {}
       return { success: true }
     } catch (error) {
       return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('project:open-folder', async (_event, projectPath: string) => {
+    try {
+      const recent = typeof projectPath === 'string'
+        ? loadRecentProjects().find(project => project.path === projectPath)
+        : undefined
+      if (!recent) return { success: false, error: 'PROJECT_OPEN_GRANT_REQUIRED' }
+      const folderPath = projectAccess.resolveRecentProjectFolder(recent.path, recent.projectId)
+      const openError = await shell.openPath(folderPath)
+      return openError
+        ? { success: false, error: 'PROJECT_FOLDER_OPEN_FAILED' }
+        : { success: true }
+    } catch (error) {
+      const code = error instanceof Error && /^PROJECT_[A-Z0-9_]+$/.test(error.message)
+        ? error.message
+        : 'PROJECT_FOLDER_OPEN_FAILED'
+      return { success: false, error: code }
     }
   })
 

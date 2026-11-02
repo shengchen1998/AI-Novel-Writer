@@ -66,6 +66,7 @@ const ERROR_KEYS = {
   LEGACY_IMPORT_HISTORY_AUTHORITY_INVALID: 'error.legacyImportFailed',
   LEGACY_IMPORT_ROSTER_UNAVAILABLE: 'error.legacyImportFailed',
   PROJECT_DELETE_FAILED: 'error.projectDeleteFailed',
+  PROJECT_FOLDER_OPEN_FAILED: 'error.projectFolderOpenFailed',
   PROJECT_RECENT_LIST_UPDATE_FAILED: 'error.projectRecentListUpdateFailed',
   PROJECT_ARCHIVE_TARGET_EXISTS: 'error.projectArchiveTargetExists',
   // 导出或云备份时有一列登记为脱敏投影却没有投影办法（#611），整次打包中止，作品不动。
