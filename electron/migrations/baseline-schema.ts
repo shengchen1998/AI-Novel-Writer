@@ -5,7 +5,9 @@ import { countDraftUnits } from '../../src/shared/draft-units'
 import { migrateDraftUnitCounts } from '../services/draft-unit-migration'
 import { ensureCharacterRosterSchema } from '../repositories/character-roster-schema'
 
-/** Single source of baseline tables; no data backfill or session fencing. */
+/** Single source of baseline tables; no data backfill or session fencing.
+ * DDL 原文（含 legacy 注释）参与历史 schema 指纹；author 来源由共享 DraftSource 扩展。
+ */
 export function applyBaselineTables(db: BetterSqlite3.Database): void {
   db.exec(`
     -- ============================================================
@@ -108,7 +110,7 @@ export function applyBaselineTables(db: BetterSqlite3.Database): void {
       chapter_number INTEGER NOT NULL,            -- 归属章节
       version INTEGER NOT NULL,                   -- v1, v2...
       status TEXT DEFAULT 'draft',                -- draft/revised/finalized/archived
-      source TEXT DEFAULT 'write',                -- write/rewrite/author
+      source TEXT DEFAULT 'write',                -- write/rewrite
       content_id INTEGER NOT NULL,                -- FK -> contents
       word_count INTEGER DEFAULT 0,               -- 字数缓存
       source_dependencies TEXT NOT NULL DEFAULT '[]', -- ordered draft ids + frozen prose hashes
