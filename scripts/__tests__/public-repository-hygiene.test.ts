@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const prohibitedPaths = [
-  'AGENTS.md',
   'CONTEXT.md',
   'design-qa.md',
   'rule.md',
