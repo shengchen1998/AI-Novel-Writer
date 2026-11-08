@@ -88,6 +88,11 @@ pnpm run verify:drive -- --scenario <场景名>
 - 优先扩展现有控制器、服务、repository、store 和共享合同，不在组件里绕过应用边界直接访问数据库、文件系统或模型传输。
 - 保持 PR 单一，避免无关格式化、生成文件和依赖变更。原生依赖及 pnpm override 会影响 Electron ABI、安装包和发布资格，修改时必须验证真实打包运行时。
 
+### Schema 兼容性（dev 铁律）
+
+- `dev` 持续从 fork 源仓库同步 feature，数据库 schema 只随上游演进。dev 自有提交必须保持上游的 schema version、迁移链、DDL 及 schema 指纹，功能只能使用上游已有的数据库合同。
+- 表、列、索引、约束、触发器、视图、迁移和 `user_version` 需要变化时，先在上游完成并同步；看似向后兼容的变化也按同一流程处理。DDL 注释和空白同样参与 schema 指纹，不属于例外。
+
 ### IPC、会话与数据事实
 
 - 新增 IPC 时同步更新 `src/shared/ipc-channels.ts`、主进程控制器注册和渲染端 `ipc` 调用。preload 只暴露受控桌面 API，不向渲染进程开放原始 `ipcRenderer` 或 Node 能力。
