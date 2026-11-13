@@ -9,7 +9,6 @@ import { setActiveProjectSessionContext } from '../../../../shared/project-sessi
 import { useDraftStore } from '../../../../stores/draft-store'
 import { useEditorStore } from '../../../../stores/editor-store'
 import { useLayoutStore } from '../../../../stores/layout-store'
-import { useLocaleStore } from '../../../../stores/locale-store'
 import { useLLMStore } from '../../../../stores/llm-store'
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
