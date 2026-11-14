@@ -14,6 +14,7 @@ import { normalizeChapterWordsTarget } from './chapter-creation-parameters'
 import { localize } from '../../i18n/core'
 import type { Locale } from '../../i18n/types'
 import { useLocaleStore } from '../../stores/locale-store'
+import { FINALIZE_POST_PROCESS_KEY } from './stage-notice'
 
 // ==========================================
 // 1. 结构与类型导出 (保留对外的向后兼容)
@@ -241,6 +242,7 @@ export function createChapterWorkflow(
     chapterWordsTarget,
     resourceKeys: [workflowResourceKey('chapter', chapterInfo.chapterNumber)],
     readResourceKeys: CHAPTER_CONTEXT_READ_RESOURCE_KEYS,
+    backgroundNotice: { stage: 'draft', chapterNumber: chapterInfo.chapterNumber },
     title: localize(uiLocale,
       `第 ${chapterInfo.chapterNumber} 章 · 写稿`,
       `Chapter ${chapterInfo.chapterNumber} · Draft`,
@@ -286,6 +288,7 @@ export function createRefineOnlyWorkflow(
     projectSession: workflowProjectSession(params.projectPath, sourceProjectSession),
     uiLocale,
     ...draftAIResourceClaims(params.chapterNumber),
+    backgroundNotice: { stage: 'revise', chapterNumber: params.chapterNumber },
     title: localize(uiLocale,
       `第 ${params.chapterNumber} 章 · 修稿`,
       `Chapter ${params.chapterNumber} · Revise`,
@@ -329,6 +332,7 @@ export function createRefineFromReviewWorkflow(
     uiLocale,
     ...(generationModelId ? { generationModelId } : {}),
     ...draftAIResourceClaims(params.chapterNumber),
+    backgroundNotice: { stage: 'revise', chapterNumber: params.chapterNumber },
     title: localize(uiLocale,
       `第 ${params.chapterNumber} 章 · 审稿修复`,
       `Chapter ${params.chapterNumber} · Apply review`,
@@ -373,6 +377,7 @@ export function createReviewOnlyWorkflow(
     projectSession: workflowProjectSession(params.projectPath, sourceProjectSession),
     uiLocale,
     ...draftAIResourceClaims(params.chapterNumber),
+    backgroundNotice: { stage: 'review', chapterNumber: params.chapterNumber },
     title: localize(uiLocale,
       `第 ${params.chapterNumber} 章 · 审稿`,
       `Chapter ${params.chapterNumber} · Review`,
@@ -423,6 +428,7 @@ export function createFinalizeWorkflow(
     projectSession: workflowProjectSession(params.projectPath, sourceProjectSession),
     uiLocale,
     ...finalizeResourceClaims(params.chapterNumber),
+    backgroundNotice: { stage: 'finalize', chapterNumber: params.chapterNumber },
     title: localize(uiLocale,
       `第 ${params.chapterNumber} 章 · 定稿`,
       `Chapter ${params.chapterNumber} · Finalize`,
@@ -444,7 +450,7 @@ export function createFinalizeWorkflow(
             chapterInfo,
             snapshot: params.snapshot,
           })
-          return cmd.execute({ step, context, callbacks })
+          context.data[FINALIZE_POST_PROCESS_KEY] = await cmd.execute({ step, context, callbacks })
         },
       },
     ],

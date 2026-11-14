@@ -1,7 +1,7 @@
 import { displayedErrorMessage } from '../i18n/app-errors'
 import type { GenerationTransportDiagnostics } from '../shared/generation-contract'
 import type { CharacterProposalBatch } from '../shared/character-proposal'
-import { createCharacterProposalChoices, type CharacterProposalChoices } from '../services/character-proposal-choices'
+import type { CharacterProposalChoices } from '../services/character-proposal-choices'
 import { create } from 'zustand'
 import { randomUUID } from '../utils/id'
 import { globalEventBus } from '../shared/event-bus'
@@ -35,6 +35,8 @@ import {
 } from '../shared/workflow-resource-claims'
 import type { FrozenWritingSkillSnapshot } from '../services/agent/writing-skill-bindings'
 import { freezeWritingSkillsSnapshot } from '../services/agent/writing-skill-bindings'
+import { stageNotice, type BackgroundNotice } from '../services/workflows/stage-notice'
+import { ipc } from '../services/ipc-client'
 import type { WritingSkillStage } from '../shared/writing-skills'
 
 // ===== 工作流数据模型 =====
@@ -246,6 +248,8 @@ export interface WorkflowDefinition {
   onCancelledAtBoundary?: (context: WorkflowContext) => void | Promise<void>
   /** 工作流完成后的通知/跳转动作（可选） */
   onComplete?: WorkflowCompleteAction
+  /** 完成或失败时，窗口不在前台则弹系统通知。 */
+  backgroundNotice?: BackgroundNotice
 }
 
 function isCurrentWorkflowSession(
@@ -714,9 +718,8 @@ export const useWorkflowStore = create<WorkflowState>()((set, get) => ({
         // Register before publishing waiting state so an immediate UI confirmation cannot be lost.
         const confirmed = new Promise<void>(resolve => { continueResolveRefs.set(run.id, resolve) })
         const batch = context.data.characterProposalBatch as CharacterProposalBatch | undefined
-        const choices = batch ? createCharacterProposalChoices(batch) : undefined
-        if (choices) context.data.characterProposalChoices = structuredClone(choices)
-        updateRunById(set, run.id, { status: 'waiting', ...(batch && choices ? { characterProposalBatch: structuredClone(batch), characterProposalChoices: structuredClone(choices) } : {}) })
+        if (batch) delete context.data.characterProposalChoices
+        updateRunById(set, run.id, { status: 'waiting', ...(batch ? { characterProposalBatch: structuredClone(batch), characterProposalChoices: undefined } : {}) })
         set(s => {
           const newWaiting = { ...s.waitingRuns, [run.id]: { waitingForConfirm: true, waitingAfterStepIndex: i - 1 } }
           return { waitingRuns: newWaiting, ...computeCompat(s.activeRuns, newWaiting) }
@@ -956,6 +959,10 @@ export const useWorkflowStore = create<WorkflowState>()((set, get) => ({
         }
       }
     }
+
+    const endedRun = get().activeRuns.find(r => r.id === run.id)
+    const notice = endedRun && definition.backgroundNotice && stageNotice(context.uiLocale, definition.backgroundNotice, endedRun, context.data)
+    if (notice) void ipc.invoke('window:notify-stage', notice).catch(() => {})
 
     // 从活跃列表移除，存入历史
     set(s => {
