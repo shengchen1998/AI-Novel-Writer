@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { FileInput, FolderOpen, Plus } from 'lucide-react'
 import { ipc } from '../../../services/ipc-client'
 import { useLayoutStore } from '../../../stores/layout-store'
-import { useLocaleStore } from '../../../stores/locale-store'
+import { currentInterfaceLocale, useLocaleStore } from '../../../stores/locale-store'
 import { navigate } from '../../../stores/navigation/navigation-intents'
 import { useProjectStore } from '../../../stores/project-store'
 import { deleteCurrentProject, removeRecentProject } from '../../project-delete-action'
@@ -32,15 +32,15 @@ async function openProjectFolder(): Promise<void> {
 }
 
 async function openBookFolder(book: Book): Promise<void> {
-  const { locale, text } = useLocaleStore.getState()
+  const { text } = useLocaleStore.getState()
   const title = text('无法打开作品文件夹', 'Could not open the book folder')
   const fallback = text('无法打开作品文件夹，请重试。', 'The book folder could not be opened. Try again.')
   try {
     const result = await ipc.invoke('project:open-folder', book.path)
     if (result.success) return
-    await alertError(displayedErrorMessage(locale, result.error, fallback), { title })
+    await alertError(displayedErrorMessage(currentInterfaceLocale(), result.error, fallback), { title })
   } catch (error) {
-    await alertError(displayedErrorMessage(locale, error, fallback), { title })
+    await alertError(displayedErrorMessage(currentInterfaceLocale(), error, fallback), { title })
   }
 }
 

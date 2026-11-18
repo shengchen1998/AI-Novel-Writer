@@ -36,6 +36,7 @@ class FakeWindow {
   readonly isDestroyed = vi.fn(() => false)
   readonly isFocused = vi.fn(() => this.focused)
   readonly isMinimized = vi.fn(() => this.minimized)
+  readonly webContents = { isCrashed: vi.fn(() => false), reload: vi.fn() }
   readonly restore = vi.fn(() => { this.minimized = false })
   readonly show = vi.fn()
   readonly focus = vi.fn(() => { this.focused = true })
