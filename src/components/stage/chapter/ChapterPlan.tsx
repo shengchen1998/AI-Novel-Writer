@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { blueprintWritePrefill } from '../../../services/workflows/chapter-write-launch'
 import type { EditorTab } from '../../../stores/editor-store'
 import { useDraftStore } from '../../../stores/draft-store'
-import { useLocaleStore } from '../../../stores/locale-store'
+import { currentInterfaceLocale, useLocaleStore } from '../../../stores/locale-store'
 import { navigate } from '../../../stores/navigation/navigation-intents'
 import { useStageStore } from '../../../stores/navigation/stage-store'
 import { openBuiltinEditor } from '../../../stores/open-builtin-editor'
@@ -74,7 +74,7 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
       if (!draft) throw new Error(text('创建后没能读到作者草稿，请重新打开本章', 'The author draft was created but could not be read. Reopen this chapter.'))
       await swapChapterTab(tab.id, () => openDraftInChapterView(draft, row?.title ?? '', session))
     } catch (error) {
-      toast.error(displayedErrorMessage(useLocaleStore.getState().locale, error, text('创建作者草稿失败', 'Could not create the author draft')))
+      toast.error(displayedErrorMessage(currentInterfaceLocale(), error, text('创建作者草稿失败', 'Could not create the author draft')))
     } finally {
       creatingAuthorDraftRef.current = false
       setCreatingAuthorDraft(false)
