@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appErrorMessage, damagedReviewCycleMessage, displayedErrorMessage, englishWithReason, errorCodeOf, importGenerationStopMessage, knownAppErrorMessage, legacyImportFailureMessage } from '../app-errors'
+import { appErrorMessage, damagedReviewCycleMessage, omittedReviewCyclesMessage, displayedErrorMessage, englishWithReason, errorCodeOf, importGenerationStopMessage, knownAppErrorMessage, legacyImportFailureMessage } from '../app-errors'
 import { shown } from './shown-locale'
 
 describe('localized application errors', () => {
@@ -23,6 +23,25 @@ describe('localized application errors', () => {
     expect(displayedErrorMessage(shown('en-US'), new Error('PORTABLE_UNSAFE_PROJECTION'))).toContain('Your book is unchanged.')
   })
 
+  it('导出重来一次资料仍被改：说明作品没动、资料被改了、再点哪个按钮，不露原码（#744）', () => {
+    const code = 'PORTABLE_EXPORT_SOURCE_CHANGED'
+    expect(displayedErrorMessage(shown('zh-CN'), new Error(code))).toBe('作品没有改动。导出时资料被改了，存档没有生成。请再点「导出本地存档」。')
+    expect(displayedErrorMessage(shown('en-US'), new Error(code))).toBe('Your book is unchanged. Files changed during export, so no archive was created. Click Export local archive again.')
+    expect(displayedErrorMessage(shown('ja-JP'), new Error(code))).not.toContain(code)
+  })
+
+  it('导出时头像文件坏了：说明作品没动、哪类资料坏了、在哪个按钮修，不说资料被改（#744）', () => {
+    const code = 'PORTABLE_EXPORT_AVATAR_DAMAGED'
+    expect(displayedErrorMessage(shown('zh-CN'), new Error(code))).toBe('作品没有改动。有个角色头像文件损坏了，存档没有生成。请在人物页给头像没显示的角色「选择头像」，再点「导出本地存档」。')
+    expect(displayedErrorMessage(shown('en-US'), new Error(code))).toBe('Your book is unchanged. A character avatar file is damaged, so no archive was created. On the character page, click Choose avatar for the character whose avatar is missing, then Export local archive again.')
+    expect(displayedErrorMessage(shown('ja-JP'), new Error(code))).not.toContain(code)
+  })
+
+  it.each(['PORTABLE_ARCHIVE_SOURCE_CHANGED', 'PORTABLE_ARCHIVE_SOURCE_UNSAFE'])('恢复时存档被改（%s）：不叫作者去点导出（#744）', code => {
+    expect(displayedErrorMessage(shown('zh-CN'), new Error(code))).not.toContain('导出')
+    expect(displayedErrorMessage(shown('en-US'), new Error(code))).not.toContain('Export')
+  })
+
   it('preserves an unknown error as localized diagnostic text', () => {
     expect(appErrorMessage(shown('en-US'), new Error('disk full'))).toBe('Something went wrong: disk full')
   })
@@ -42,12 +61,24 @@ describe('generation error codes from the main process', () => {
     ['Error: GENERATION_REQUEST_FAILED', '重试'],
     ["Error invoking remote method 'finalization-generation:commit': Error: FINALIZED_CHARACTER_SOURCE_CONFLICT", '当前状态'],
     ["Error invoking remote method 'finalization-generation:commit': Error: FINALIZED_CHARACTER_FIELD_CONFLICT", '生成期间'],
+    ["Error invoking remote method 'review-revision:prepare': Error: GENERATION_REVIEW_RESTORED_HISTORY", '恢复前'],
   ])('turns %s into a full sentence without the IPC wrapper', (raw, hint) => {
     for (const error of [raw, new Error(raw)]) {
       const zh = knownAppErrorMessage(shown('zh-CN'), error)
       expect(zh).toContain(hint)
       expect(zh).not.toMatch(/Error invoking|GENERATION_|FINALIZED_/u)
       expect(knownAppErrorMessage(shown('en-US'), error)).toMatch(/^[A-Z][^_]+\.$/u)
+    }
+  })
+
+  it('tells the author a pre-restore review cannot drive a revision or recheck, and names the Review again button (#702)', () => {
+    const error = new Error("Error invoking remote method 'review-revision:prepare': Error: GENERATION_REVIEW_RESTORED_HISTORY")
+    const generic = new Error('GENERATION_REVIEW_LINEAGE_UNPROVEN')
+    for (const [locale, restored, button] of [['zh-CN', '恢复', '「重新审稿」'], ['en-US', 'restore', '“Review again”'], ['ja-JP', '復元', '「Review again」']] as const) {
+      const message = knownAppErrorMessage(shown(locale), error)
+      expect(message).toContain(restored)
+      expect(message).toContain(button)
+      expect(message).not.toBe(knownAppErrorMessage(shown(locale), generic))
     }
   })
 
@@ -363,22 +394,42 @@ describe('日文界面的已登记错误', () => {
 })
 
 describe('damagedReviewCycleMessage', () => {
-  it('回收站删除时间读不成日期时照原样写出，不写 Invalid Date（#702）', () => {
-    const text = damagedReviewCycleMessage(shown('zh-CN'),
-      { chapterNumber: 2, chapterTitle: '沉船', location: 'trash', deletedAt: '坏掉的时间' })
-    expect(text).toContain('（删除于 坏掉的时间）')
-    expect(text).not.toContain('Invalid Date')
+  it.each([
+    ['zh-CN', { chapterNumber: 2, chapterTitle: '沉船', inTrash: false }, '作品没有改动。第 2 章「沉船」有条审稿记录损坏，存档没生成。请把这条提示反馈给我们。'],
+    ['zh-CN', { chapterNumber: 2, chapterTitle: '沉船', inTrash: true }, '作品没有改动。回收站里第 2 章「沉船」有条审稿记录损坏，存档没生成。请把这条提示反馈给我们。'],
+    ['en-US', { chapterNumber: 2, chapterTitle: '', inTrash: false }, 'Your book is unchanged. A review record in Chapter 2 is damaged, so no archive was made. Please report this message to us.'],
+    ['zh-CN', { chapterNumber: null, chapterTitle: '', inTrash: false }, '作品没有改动。有一项数据无法安全打包，存档没有生成。请把这条提示反馈给我们。'],
+  ] as const)('%s：只写章号、章名和是否在回收站，不写稿的版本和删除时间（#702）', (locale, damaged, expected) => {
+    expect(damagedReviewCycleMessage(shown(locale), damaged)).toBe(expected)
   })
+})
 
-  it('删除时间是不存在的日期时照原样写出，不被 Date 顺延成别的日子（#702）', () => {
-    const text = damagedReviewCycleMessage(shown('zh-CN'),
-      { chapterNumber: 2, chapterTitle: '沉船', location: 'trash', deletedAt: '2026-02-30 08:05:00' })
-    expect(text).toContain('（删除于 2026-02-30 08:05:00）')
-  })
-
-  it('删除时间是合法的 ISO 写法时照常按本地时间写，与 SQLite 写法同一时刻显示相同（#702）', () => {
-    const message = (deletedAt: string) => damagedReviewCycleMessage(shown('zh-CN'),
-      { chapterNumber: 2, chapterTitle: '沉船', location: 'trash', deletedAt })
-    expect(message('2026-11-18T08:05:00.000Z')).toBe(message('2026-11-18 08:05:00'))
+describe('omittedReviewCyclesMessage', () => {
+  it.each([
+    ['zh-CN', [{ chapterNumber: 2, chapterTitle: '沉船', inTrash: false }], '第 2 章「沉船」有条审稿记录损坏，没放进存档。正文和其他审稿内容都在。'],
+    ['zh-CN', [{ chapterNumber: 2, chapterTitle: '沉船', inTrash: true }], '回收站里第 2 章「沉船」有条审稿记录损坏，没放进存档。正文和其他审稿内容都在。'],
+    ['en-US', [{ chapterNumber: 2, chapterTitle: '沉船', inTrash: false }], 'A damaged review record in Chapter 2 "沉船" was left out of the archive. The text and other reviews are included.'],
+    ['ja-JP', [{ chapterNumber: 2, chapterTitle: '沉船', inTrash: false }], '第2章「沉船」のレビュー記録が破損していたため、アーカイブに含めませんでした。本文とその他のレビュー内容は含まれています。'],
+    ['zh-CN', [{ chapterNumber: 5, chapterTitle: '', inTrash: false }, { chapterNumber: 2, chapterTitle: '沉船', inTrash: true }, { chapterNumber: 5, chapterTitle: '', inTrash: false }],
+      '第 5 章、回收站里第 2 章「沉船」有审稿记录损坏，没放进存档。正文和其他审稿内容都在。'],
+    ['en-US', [{ chapterNumber: 2, chapterTitle: '', inTrash: false }, { chapterNumber: 5, chapterTitle: '', inTrash: false }],
+      'Damaged review records in Chapter 2, Chapter 5 were left out of the archive. The text and other reviews are included.'],
+    ['en-US', [{ chapterNumber: 2, chapterTitle: '', inTrash: false }, { chapterNumber: 2, chapterTitle: '', inTrash: true }],
+      'Damaged review records in Chapter 2, Chapter 2 in the trash were left out of the archive. The text and other reviews are included.'],
+    ['ja-JP', [{ chapterNumber: 2, chapterTitle: '', inTrash: false }, { chapterNumber: 2, chapterTitle: '', inTrash: true }],
+      '第2章、ゴミ箱の第2章のレビュー記録が破損していたため、アーカイブに含めませんでした。本文とその他のレビュー内容は含まれています。'],
+    ['zh-CN', [{ chapterNumber: 2, chapterTitle: '港口', inTrash: false }, { chapterNumber: 2, chapterTitle: '沉船', inTrash: true }, { chapterNumber: 2, chapterTitle: '港口', inTrash: false }],
+      '第 2 章「港口」、回收站里第 2 章「沉船」有审稿记录损坏，没放进存档。正文和其他审稿内容都在。'],
+    ['zh-CN', [{ chapterNumber: null, chapterTitle: '', inTrash: false }], '有条审稿记录损坏，没放进存档。正文和其他审稿内容都在。'],
+    ['zh-CN', [{ chapterNumber: null, chapterTitle: '', inTrash: false }, { chapterNumber: null, chapterTitle: '', inTrash: false }],
+      '有几条审稿记录损坏，没放进存档。正文和其他审稿内容都在。'],
+    ['zh-CN', [{ chapterNumber: 2, chapterTitle: '沉船', inTrash: false }, { chapterNumber: null, chapterTitle: '', inTrash: false }],
+      '第 2 章「沉船」等处有审稿记录损坏，没放进存档。正文和其他审稿内容都在。'],
+    ['en-US', [{ chapterNumber: 2, chapterTitle: '沉船', inTrash: false }, { chapterNumber: null, chapterTitle: '', inTrash: false }],
+      'Damaged review records in Chapter 2 "沉船" and elsewhere were left out of the archive. The text and other reviews are included.'],
+    ['ja-JP', [{ chapterNumber: 2, chapterTitle: '沉船', inTrash: false }, { chapterNumber: null, chapterTitle: '', inTrash: false }],
+      '第2章「沉船」などのレビュー記録が破損していたため、アーカイブに含めませんでした。本文とその他のレビュー内容は含まれています。'],
+  ] as const)('%s：%j', (locale, omitted, expected) => {
+    expect(omittedReviewCyclesMessage(shown(locale), omitted)).toBe(expected)
   })
 })

@@ -1132,7 +1132,7 @@ export function registerDatabaseController() {
 
   ipcMain.handle('db:revision-get-pending', async (_event, baseDraftId: number, expectedProjectPath: string) => {
     assertRequiredExpectedProjectPath(getCurrentProjectPath(), expectedProjectPath)
-    return RevisionRepository.getPending(baseDraftId)
+    return RevisionRepository.getPending(baseDraftId, projectAccess.captureCurrentSession()?.projectId)
   })
 
   ipcMain.handle('db:revision-get-full', async (_event, id: number, expectedProjectPath: string) => {
@@ -1148,7 +1148,7 @@ export function registerDatabaseController() {
   ipcMain.handle('db:revision-merge', async (_event, request: Parameters<typeof RevisionRepository.mergeIntoDraft>[0], expectedProjectPath: string) => {
     try {
       assertRequiredExpectedProjectPath(getCurrentProjectPath(), expectedProjectPath)
-      return { success: true, receipt: RevisionRepository.mergeIntoDraft(request) }
+      return { success: true, receipt: RevisionRepository.mergeIntoDraft(request, getProjectDb(), projectAccess.captureCurrentSession()?.projectId) }
     } catch (err) {
       return { success: false, error: String(err) }
     }
@@ -1226,7 +1226,7 @@ export function registerDatabaseController() {
     assertRequiredExpectedProjectPath(getCurrentProjectPath(), expectedProjectPath)
     const db = getProjectDb()
     if (!db) return null
-    return ReviewCycleRepository.getByReviewId(reviewId, db)
+    return ReviewCycleRepository.getByReviewId(reviewId, db, projectAccess.captureCurrentSession()?.projectId)
   })
 
   ipcMain.handle('db:review-next-index', async (_event, baseDraftId: number, expectedProjectPath: string) => {

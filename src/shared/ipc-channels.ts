@@ -301,6 +301,8 @@ export interface PortableProjectExportReceipt {
   }
   entryCount: number
   requiresRuntimeFreezeGuard: true
+  /** 验不过、没放进存档的审修循环所在的章。 */
+  omittedReviewCycles?: readonly DamagedReviewCycle[]
 }
 
 /** 归档与恢复副本位置分别来自 dialog:select-project-archive 与 dialog:select-project-restore-target 的授权。 */
@@ -328,9 +330,10 @@ export type PortableProjectOperationErrorCode =
   | 'PORTABLE_ASSET_MISSING'
   | 'PORTABLE_ASSET_UNSAFE'
   | 'PORTABLE_CONTEXT_INVALID'
+  | 'PORTABLE_EXPORT_AVATAR_DAMAGED'
+  | 'PORTABLE_EXPORT_SOURCE_CHANGED'
   | 'PORTABLE_GRANT_INVALID'
   | 'PORTABLE_SCHEMA_UNSUPPORTED'
-  | 'PORTABLE_SOURCE_CHANGED'
   | 'PORTABLE_TARGET_INSIDE_SOURCE'
   | 'PORTABLE_UNSAFE_PROJECTION'
   | 'PORTABLE_RESTORE_CANCELLED'

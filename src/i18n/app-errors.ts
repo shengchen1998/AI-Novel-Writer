@@ -1,7 +1,6 @@
 import { copyLocale, localize, translate, type MessageKey } from './core'
 import type { ErrorDisplayLocale, InterfaceLocale, Locale } from './types'
 import type { DamagedReviewCycle } from '../shared/damaged-review-cycle'
-import { SQLITE_TIMESTAMP, sqliteTime } from '../shared/sqlite-time'
 
 /**
  * 稳定错误码 → 界面文案键。新增可读错误码只在这里登记一行，并在两份语言资源里补文案。
@@ -74,6 +73,10 @@ const ERROR_KEYS = {
   PROJECT_ARCHIVE_TARGET_EXISTS: 'error.projectArchiveTargetExists',
   // 导出或云备份时有一列登记为脱敏投影却没有投影办法（#611），整次打包中止，作品不动。
   PORTABLE_UNSAFE_PROJECTION: 'error.portableUnsafeProjection',
+  PORTABLE_EXPORT_SOURCE_CHANGED: 'error.portableSourceChanged',
+  CLOUD_BACKUP_SOURCE_CHANGED: 'error.cloudBackupSourceChanged',
+  PORTABLE_EXPORT_AVATAR_DAMAGED: 'error.portableAvatarDamaged',
+  CLOUD_BACKUP_AVATAR_DAMAGED: 'error.cloudBackupAvatarDamaged',
   // 选择文件或文件夹后授权已过期、用尽或被撤销（例如选完很久才确认）。
   EXTERNAL_FILE_GRANT_NOT_FOUND: 'error.externalFileGrantExpired',
   EXTERNAL_FILE_GRANT_EXPIRED: 'error.externalFileGrantExpired',
@@ -85,6 +88,7 @@ const ERROR_KEYS = {
   GENERATION_PROJECT_SESSION_REQUIRED: 'error.generationProjectSessionRequired',
   GENERATION_DRAFT_NOT_CURRENT: 'error.generationDraftNotCurrent',
   GENERATION_REVIEW_LINEAGE_UNPROVEN: 'error.generationReviewLineageUnproven',
+  GENERATION_REVIEW_RESTORED_HISTORY: 'error.generationReviewRestoredHistory',
   // 源稿所在章节进了回收站（#564）：恢复稿里的原文不再显示。
   GENERATION_REVIEW_SOURCE_DELETED: 'error.generationReviewSourceDeleted',
   GENERATION_DRAFT_DEPENDENCY_STALE: 'error.generationDraftDependencyStale',
@@ -419,25 +423,36 @@ export function importGenerationStopMessage(
   return joinSentences(locale, translate(locale, AUTHOR_STOP_REASON_KEYS[stop]), translate(locale, 'error.authorInferenceStopNext'))
 }
 
-export function damagedReviewCycleMessage(locale: ErrorDisplayLocale, damaged: DamagedReviewCycle): string {
+function chapterPhrase(locale: ErrorDisplayLocale, damaged: DamagedReviewCycle & { chapterNumber: number }): string {
   const params = { number: damaged.chapterNumber, title: damaged.chapterTitle }
-  let chapter = damaged.chapterTitle
+  const chapter = damaged.chapterTitle
     ? localize(locale, '第 {number} 章「{title}」', 'Chapter {number} "{title}"', '第{number}章「{title}」', params)
     : localize(locale, '第 {number} 章', 'Chapter {number}', '第{number}章', params)
-  if (damaged.location === 'draft') {
-    chapter = localize(locale, '{chapter}草稿 v{version}', 'Draft v{version} of {chapter}', '{chapter}のDraft v{version}',
-      { chapter, version: damaged.draftVersion })
-  } else if (damaged.location === 'trash') {
-    const deletedAt = sqliteTime(damaged.deletedAt)
-    // Date 会把 2 月 30 日顺延成 3 月 2 日；转回去对不上原值就照原样写。
-    const when = Number.isNaN(deletedAt.getTime())
-      || (SQLITE_TIMESTAMP.test(damaged.deletedAt) && deletedAt.toISOString().slice(0, 19).replace('T', ' ') !== damaged.deletedAt)
-      ? damaged.deletedAt
-      : deletedAt.toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })
-    chapter = localize(locale, '回收站里{chapter}（删除于 {when}）', '{chapter} in the trash (deleted {when})', 'ゴミ箱の{chapter}（{when}削除）',
-      { chapter, when })
+  return damaged.inTrash ? localize(locale, '回收站里{chapter}', '{chapter} in the trash', 'ゴミ箱の{chapter}', { chapter }) : chapter
+}
+
+const located = (damaged: DamagedReviewCycle): damaged is DamagedReviewCycle & { chapterNumber: number } => damaged.chapterNumber !== null
+
+/** 指不出章节时按「有一项数据无法安全打包」说明。 */
+export function damagedReviewCycleMessage(locale: ErrorDisplayLocale, damaged: DamagedReviewCycle): string {
+  return located(damaged)
+    ? translate(locale, 'error.damagedReviewCycle', { chapter: chapterPhrase(locale, damaged) })
+    : translate(locale, 'error.portableUnsafeProjection')
+}
+
+export function omittedReviewCyclesMessage(locale: ErrorDisplayLocale, omitted: readonly DamagedReviewCycle[]): string {
+  const [first] = omitted
+  if (!first) return ''
+  if (omitted.length === 1) {
+    return located(first)
+      ? translate(locale, 'backup.omittedReviewCycleOne', { chapter: chapterPhrase(locale, first) })
+      : translate(locale, 'backup.omittedReviewCycleUnknownOne')
   }
-  return translate(locale, 'error.damagedReviewCycle', { chapter })
+  const places = [...new Map(omitted.filter(located).map(item => [`${item.inTrash}:${item.chapterNumber}:${item.chapterTitle}`, item])).values()]
+    .sort((a, b) => Number(a.inTrash) - Number(b.inTrash) || a.chapterNumber - b.chapterNumber || a.chapterTitle.localeCompare(b.chapterTitle))
+  if (!places.length) return translate(locale, 'backup.omittedReviewCycleUnknownMany')
+  const chapters = places.map(item => chapterPhrase(locale, item)).join(locale === 'en-US' ? ', ' : '、')
+  return translate(locale, omitted.every(located) ? 'backup.omittedReviewCycleChapters' : 'backup.omittedReviewCycleChaptersAndOthers', { chapters })
 }
 
 function joinSentences(locale: InterfaceLocale, first: string, second: string): string {

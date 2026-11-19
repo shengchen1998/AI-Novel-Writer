@@ -18,7 +18,7 @@ function fixture() {
     let now = 1000;
     const repository = new GenerationRunRepository(() => db, () => now);
     const h = textHash('frozen'), fingerprint = { chapterBriefHash: h, authorGuidanceHash: h, dependencyHash: h, contextSnapshotHash: h, templateHash: h, skillSnapshotHash: h, modelLeaseRevision: h, policyHash: h, outputContractHash: h };
-    const open: OpenGenerationRunRequest = { projectId: 'project', epoch: 'epoch', operation: 'write', uiActionNonce: 'click', frozenInputHash: h, fingerprint, contextSnapshotId: 'context', sourceManifest: { kind: 'synthetic-frozen-sources' }, sourceRefs: [], budget: { maxPhysicalRequests: 2, maxTokenLiability: 500, maxOutputPerRequest: 100, maxActiveElapsedMs: 10000 } };
+    const open: OpenGenerationRunRequest = { projectId: 'project', epoch: 'epoch', operation: 'write', uiActionNonce: 'click', frozenInputHash: h, fingerprint, contextSnapshotId: 'context', sourceManifest: { kind: 'synthetic-frozen-sources', operation: 'write' }, sourceRefs: [], budget: { maxPhysicalRequests: 2, maxTokenLiability: 500, maxOutputPerRequest: 100, maxActiveElapsedMs: 10000 } };
     const policy = { estimatorVersion: 'fixture-v1', safetyMarginTokens: 10, reasoning: 'included-in-completion' as const, canBoundTotalLiability: true };
     const request = (runId: string, nonce = 'call'): ExecuteGenerationRequest => ({ runId, invocationNonce: nonce, requestHash: textHash(nonce), providerRequest: { prompt: 'author' }, reservedTokens: 200, requestedOutputTokens: 100, inputUpperBoundTokens: 90, reasoningUpperBoundTokens: 0, usagePolicy: policy });
     return { db, repository, open, policy, request, setNow: (value: number) => { now = value; } };
@@ -308,7 +308,7 @@ it('导入的冻结历史上，「不再恢复」与撤销都不写（#686）', 
 });
 describe('运行上的记账跟着运行走（#608）', () => {
     const marked = (manifest: Record<string, unknown> = {}) => {
-        const f = fixture(), run = f.repository.open({ ...f.open, sourceManifest: { ...f.open.sourceManifest, ...manifest } });
+        const f = fixture(), run = f.repository.open({ ...f.open, operation: String(manifest.operation ?? f.open.operation), sourceManifest: { ...f.open.sourceManifest, ...manifest } });
         f.repository.recordRecoveryAbandonment(run.runId, { artifact: 3 });
         f.db.transaction(() => f.repository.recordPlotOutlineCommitWithinTransaction(run.runId)).immediate();
         return { ...f, run };
@@ -334,5 +334,32 @@ describe('运行上的记账跟着运行走（#608）', () => {
         f.repository.pause(f.run.rootActionId);
         f.repository.resume(f.run.runId, { ...f.run.binding, epoch: 'epoch-2' });
         expect(f.repository.get(f.run.runId)).toMatchObject({ status: 'running', binding: { ...f.run.binding, epoch: 'epoch-2' } });
+    });
+});
+describe('启动与关闭作品时的恢复只处理没静止的根（#702）', () => {
+    it('崩溃后：已派发变结果不明，已预留变派发前取消，活动的根变暂停；已暂停、已取消的根上的已派发也变结果不明', () => {
+        const f = fixture(), open = (nonce: string) => f.repository.open({ ...f.open, uiActionNonce: nonce });
+        const reserve = (runId: string) => f.repository.reserve(runId, 'call', textHash('call'), 200, 100).attempt.attemptId;
+        const dispatched = open('dispatched'), reserved = open('reserved'), idle = open('idle'), paused = open('paused'), cancelled = open('cancelled');
+        const inFlight = reserve(dispatched.runId), held = reserve(reserved.runId), pausedInFlight = reserve(paused.runId), cancelledInFlight = reserve(cancelled.runId);
+        for (const id of [inFlight, pausedInFlight, cancelledInFlight]) f.repository.markDispatched(id);
+        f.repository.pause(paused.rootActionId);
+        f.repository.pause(cancelled.rootActionId, true);
+        f.setNow(4000);
+        f.repository.recoverInterrupted();
+        expect([inFlight, held, pausedInFlight, cancelledInFlight].map(id => f.repository.receipt(id).attempt.status))
+            .toEqual(['unknown', 'cancelled-before-dispatch', 'unknown', 'unknown']);
+        expect([dispatched, reserved, idle, paused, cancelled].map(run => [f.repository.budget(run.rootActionId).root.status, f.repository.get(run.runId).status]))
+            .toEqual([['paused', 'paused'], ['paused', 'paused'], ['paused', 'paused'], ['paused', 'paused'], ['cancelled', 'cancelled']]);
+        expect(f.repository.budget(dispatched.rootActionId).activeElapsedMs).toBe(3000);
+    });
+    it('都静止以后再恢复一遍，不改任何一行', () => {
+        const f = fixture(), run = f.repository.open(f.open);
+        f.repository.markDispatched(f.repository.reserve(run.runId, 'call', textHash('call'), 200, 100).attempt.attemptId);
+        f.repository.recoverInterrupted();
+        const changes = () => f.db.prepare('SELECT total_changes()').pluck().get();
+        const before = changes();
+        f.repository.recoverInterrupted();
+        expect(changes()).toBe(before);
     });
 });

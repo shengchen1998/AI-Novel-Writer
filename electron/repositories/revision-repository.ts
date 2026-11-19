@@ -30,6 +30,8 @@ export interface RevisionMeta {
     wordCount: number
     createdAt: string
     updatedAt: string
+    /** 合并后会自动复验：修稿属于审修循环，且循环不是恢复前的（#702）。与 mergedReviewCycle 同一判别；只有待合并列表带它。 */
+    recheckOnMerge?: true
 }
 
 /** 修稿完整数据（含正文） */
@@ -59,6 +61,19 @@ export interface MergeRevisionReceipt {
         mergedHash: string
         disposition: 'required' | 'not-required' | 'completed'
     }
+}
+
+/** 恢复前的循环复验必然失败，所以回执不带它，免得自动发起复验（#702）。 */
+function mergedReviewCycle(request: MergeRevisionRequest, db: import('better-sqlite3').Database, projectId: string | undefined): MergeRevisionReceipt['reviewCycle'] {
+    if (!hasReviewCycleSchema(db)) return undefined
+    const committed = ReviewCycleRepository.commitMergedRevision({
+        revisionId: request.revisionId,
+        mergedHash: contentHash(request.mergedContent),
+    }, db)
+    if (!committed.bound || !committed.cycleId) return undefined
+    const plan = ReviewCycleRepository.planRecheck(committed.cycleId, db)
+    if (projectId && ReviewCycleRepository.isRestoredHistory(plan.rootActionId, projectId, db)) return undefined
+    return { cycleId: committed.cycleId, mergedHash: contentHash(request.mergedContent), disposition: plan.disposition }
 }
 
 function rowToSourceDraft(row: Record<string, unknown>): ExpectedDraftSource | null {
@@ -221,7 +236,7 @@ export class RevisionRepository {
     }
 
     /** 获取某草稿的所有 pending 修稿 */
-    static getPending(baseDraftId: number): RevisionMeta[] {
+    static getPending(baseDraftId: number, projectId?: string): RevisionMeta[] {
         const db = getProjectDb()
         if (!db) return []
 
@@ -231,7 +246,15 @@ export class RevisionRepository {
       ORDER BY revision_index ASC
     `).all(baseDraftId) as Record<string, unknown>[]
 
-        return rows.map(rowToMeta)
+        const cycleRoot = hasReviewCycleSchema(db)
+            ? db.prepare('SELECT root_action_id FROM review_cycles WHERE revision_id = ?').pluck()
+            : null
+        return rows.map(row => {
+            const meta = rowToMeta(row)
+            const root = cycleRoot?.get(meta.id) as string | undefined
+            const restored = root !== undefined && Boolean(projectId) && ReviewCycleRepository.isRestoredHistory(root, projectId!, db)
+            return root !== undefined && !restored ? { ...meta, recheckOnMerge: true } : meta
+        })
     }
 
     /** 获取修稿完整数据 */
@@ -265,7 +288,7 @@ export class RevisionRepository {
      * revisionId 同时是天然的幂等身份：已完成的同一合并只返回读回结果，
      * 不会再次覆盖之后产生的正文。
      */
-    static mergeIntoDraft(request: MergeRevisionRequest, db = getProjectDb()): MergeRevisionReceipt {
+    static mergeIntoDraft(request: MergeRevisionRequest, db = getProjectDb(), projectId?: string): MergeRevisionReceipt {
         if (!db) throw new Error('PROJECT_NOT_OPEN')
 
         return db.transaction((): MergeRevisionReceipt => {
@@ -313,18 +336,7 @@ export class RevisionRepository {
                 ) {
                     throw new Error('REVISION_ALREADY_MERGED')
                 }
-                let reviewCycle: MergeRevisionReceipt['reviewCycle']
-                if (hasReviewCycleSchema(db)) {
-                    const committed = ReviewCycleRepository.commitMergedRevision({
-                        revisionId: request.revisionId,
-                        mergedHash: contentHash(request.mergedContent),
-                    }, db)
-                    if (committed.bound && committed.cycleId) {
-                        const plan = ReviewCycleRepository.planRecheck(committed.cycleId, db)
-                        reviewCycle = { cycleId: committed.cycleId, mergedHash: contentHash(request.mergedContent),
-                            disposition: plan.disposition }
-                    }
-                }
+                const reviewCycle = mergedReviewCycle(request, db, projectId)
                 return {
                     revisionId: request.revisionId,
                     targetDraftId: request.targetDraftId,
@@ -379,18 +391,7 @@ export class RevisionRepository {
             if (revisionUpdate.changes !== 1) {
                 throw new Error('REVISION_NOT_PENDING')
             }
-            let reviewCycle: MergeRevisionReceipt['reviewCycle']
-            if (hasReviewCycleSchema(db)) {
-                const committed = ReviewCycleRepository.commitMergedRevision({
-                    revisionId: request.revisionId,
-                    mergedHash: contentHash(request.mergedContent),
-                }, db)
-                if (committed.bound && committed.cycleId) {
-                    const plan = ReviewCycleRepository.planRecheck(committed.cycleId, db)
-                    reviewCycle = { cycleId: committed.cycleId, mergedHash: contentHash(request.mergedContent),
-                        disposition: plan.disposition }
-                }
-            }
+            const reviewCycle = mergedReviewCycle(request, db, projectId)
 
             return {
                 revisionId: request.revisionId,

@@ -10,6 +10,7 @@ import { DRAFT_SHORT_OUTLINE_PURPOSE } from '../../src/shared/draft-short-outlin
 import { countDraftUnits, draftTargetUnitRange } from '../../src/shared/draft-units';
 import { getProjectDb } from '../database';
 import { GENERATION_LEDGER_UNREADABLE } from './generation-ledger-admission';
+import { candidateRunIds, clickOfOpenKey, clickOfRootKey, runIndexOf, uiActionNonceOfOpenKey, type GenerationClick } from './generation-run-index';
 import type { PortableRuntimeFreezeTable } from '../services/portable-runtime-freeze';
 import { assertReservation, assertAttemptTransition, rootActionIdempotencyKey, type RootAction, type RootBudget, type PhysicalAttempt, type VisibleArtifact, type ProviderUsagePolicy } from '../../src/shared/generation-contract';
 import { isContentHash, sameProjectEpoch, type FrozenInputFingerprint, type SourceRef, type ProjectEpoch } from '../../src/shared/source-ref';
@@ -91,31 +92,11 @@ const receiptSelect = `SELECT t.attempt_id,t.run_id,t.rowid AS ordinal,t.attempt
     a.artifact_id,a.run_id AS artifact_run_id,a.artifact_json,a.revision,a.status AS artifact_status
     FROM generation_attempts t LEFT JOIN generation_artifacts a ON a.attempt_id=t.attempt_id`;
 export const textHash = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
-/** 一次点击的身份：根的 idempotency_key 去掉冻结输入哈希。 */
-export interface GenerationClick { projectId: string; operation: string; uiActionNonce: string }
-function clickOfRootKey(key: unknown): GenerationClick | undefined {
-    if (typeof key !== 'string') return undefined;
-    try {
-        const parts: unknown = JSON.parse(key);
-        return Array.isArray(parts) && parts.length >= 3 && parts.slice(0, 3).every(part => typeof part === 'string')
-            ? { projectId: parts[0], operation: parts[1], uiActionNonce: parts[2] } : undefined;
-    } catch {
-        return undefined;
-    }
-}
-function clickOfOpenKey(openKey: string): GenerationClick | undefined {
-    try {
-        const outer: unknown = JSON.parse(openKey);
-        return Array.isArray(outer) ? clickOfRootKey(outer[0]) : undefined;
-    } catch {
-        return undefined;
-    }
-}
-export function uiActionNonceOfOpenKey(openKey: string): string | undefined {
-    return clickOfOpenKey(openKey)?.uiActionNonce;
-}
 /** 封存的根是终态：列举跳过它，阻断码也不再改写。 */
 export const UNSEALED_ROOT = `blocked_code IS NOT '${GENERATION_LEDGER_UNREADABLE}'`;
+/** 没静止的根：还在 active，或有已预留、已派发的尝试。只有它们在崩溃或关闭时需要落到暂停与终态。 */
+export const UNSETTLED_ROOT = `(json_extract(action_json,'$.status')='active' OR root_action_id IN (SELECT root_action_id FROM generation_attempts
+    WHERE json_extract(attempt_json,'$.status') IN ('reserved','dispatch-marked')))`;
 /** 点击号读不出的运行认不出是不是前驱，所以直接报 conflict。 */
 export function slotRunNonces(rows: readonly { run_id: string; open_key: string }[], conflict: string): { runId: string; nonce: string }[] {
     return rows.map(row => {
@@ -188,10 +169,13 @@ export class GenerationRunRepository {
      * 身份键也读不出时认不出是哪次点击，按占用处理。`root` 是开这棵树的那次点击。
      */
     sealedClaims(claims: (click: GenerationClick, root: GenerationClick | undefined) => boolean): boolean {
-        const rows = this.db().prepare(`SELECT g.idempotency_key AS root_key,r.open_key FROM generation_roots g LEFT JOIN generation_runs r ON r.root_action_id=g.root_action_id
-            WHERE NOT (g.${UNSEALED_ROOT})`).all() as { root_key: string; open_key: string | null }[];
+        const rows = this.db().prepare(`SELECT g.root_action_id AS root_id,g.idempotency_key AS root_key,r.open_key FROM generation_roots g LEFT JOIN generation_runs r ON r.root_action_id=g.root_action_id
+            WHERE NOT (g.${UNSEALED_ROOT})`).all() as { root_id: string | null; root_key: string; open_key: string | null }[];
         return rows.some(row => {
             const root = clickOfRootKey(row.root_key);
+            // 主键为 NULL 的根挂不上运行，认不出的键也撞不上新点击的键。
+            const unclaimable = row.root_id === null && root === undefined;
+            if (unclaimable) return false;
             return [root, ...(row.open_key === null ? [] : [clickOfOpenKey(row.open_key)])].some(click => click === undefined || claims(click, root));
         });
     }
@@ -326,14 +310,16 @@ export class GenerationRunRepository {
     }
     open(request: OpenGenerationRunRequest): DurableGenerationRun {
         const frozen = binding(request);
+        if (frozen.sourceManifest.operation !== request.operation) fail('GENERATION_BINDING_INVALID');
         return this.transaction(() => {
             let action: RootAction = { projectId: request.projectId, epoch: request.epoch, operation: request.operation, uiActionNonce: request.uiActionNonce, frozenInputHash: request.frozenInputHash, rootActionId: randomUUID(), status: 'active' };
             const key = rootActionIdempotencyKey(action);
             const openKey = encode([key, request.parentRootActionId ?? null]);
             if (request.operation === 'chapter-blueprint-directory') {
+                // 封存的兄弟不在这里拦：精确命中由 get() 报封存码，新运行由 sealedClaims 拦。
                 const priorRuns = this.db().prepare(`SELECT r.run_id FROM generation_runs r JOIN generation_roots root ON root.root_action_id=r.root_action_id
                     WHERE json_extract(root.action_json,'$.projectId')=? AND json_extract(root.action_json,'$.operation')=?
-                    AND json_extract(root.action_json,'$.uiActionNonce')=?`).all(request.projectId, request.operation, request.uiActionNonce) as { run_id: string }[];
+                    AND json_extract(root.action_json,'$.uiActionNonce')=? AND root.${UNSEALED_ROOT}`).all(request.projectId, request.operation, request.uiActionNonce) as { run_id: string }[];
                 for (const prior of priorRuns) this.assertBlueprintRecoveryWritable(prior.run_id);
             }
             const existing = this.db().prepare('SELECT run_id FROM generation_runs WHERE open_key=?').get(openKey) as {
@@ -366,10 +352,16 @@ export class GenerationRunRepository {
             return this.get(runId);
         });
     }
+    /** 运行索引按 open_key 里的点击取候选，查询再按绑定的 sourceManifest.operation 筛；两者不一致的绑定不许写进库。 */
+    private assertClickOperation(runId: string, next: RunBinding): void {
+        const click = clickOfOpenKey(this.db().prepare('SELECT open_key FROM generation_runs WHERE run_id=?').pluck().get(runId));
+        if (click && click.operation !== next.sourceManifest.operation) fail('GENERATION_BINDING_INVALID');
+    }
     replaceUnstartedBinding(runId: string, expected: RunBinding, next: RunBinding): DurableGenerationRun {
         const frozen = binding(next);
         return this.transaction(() => {
             const run = this.get(runId), budget = this.budget(run.rootActionId);
+            this.assertClickOperation(runId, frozen);
             this.assertBlueprintRecoveryWritable(runId);
             this.assertPlotOutlineWritable(runId);
             if (!isDeepStrictEqual(run.binding, expected)) fail('GENERATION_BINDING_CONFLICT');
@@ -664,13 +656,14 @@ export class GenerationRunRepository {
         const recovery = this.assertBlueprintRecoveryWritable(rows[0].run_id);
         return recovery.progress.find(item => item.operationId === operationId) ?? fail('GENERATION_DIRECTORY_PROGRESS_INVALID');
     }
+    private blueprintDirectoryCandidates(): string {
+        return candidateRunIds(runIndexOf(this.db()).lookup(click => click.operation === 'chapter-blueprint-directory'));
+    }
     listDirectoryProgress(): DirectoryGenerationCatalog {
         const rows = this.db().prepare(`SELECT r.run_id FROM generation_runs r WHERE r.root_action_id IN (SELECT root_action_id FROM generation_roots WHERE ${UNSEALED_ROOT})
-            AND (json_extract(r.binding_json,'$.sourceManifest.operation')='chapter-blueprint-directory'
-            OR json_type(r.binding_json,'$."$blueprintRetirement"') IS NOT NULL
-            OR json_type(r.binding_json,'$."$runEffects".blueprintAuthorEdit') IS NOT NULL
+            AND (r.run_id IN (SELECT value FROM json_each(?)) AND json_extract(r.binding_json,'$.sourceManifest.operation')='chapter-blueprint-directory'
             OR EXISTS (SELECT 1 FROM generation_attempts t WHERE t.run_id=r.run_id AND json_type(t.usage_receipt_json,'$.directoryProgress') IS NOT NULL))
-            ORDER BY r.rowid`).all() as { run_id: string }[];
+            ORDER BY r.rowid`).all(this.blueprintDirectoryCandidates()) as { run_id: string }[];
         const catalog: DirectoryGenerationCatalog = { progress: [], diagnostics: [] };
         for (const row of rows) {
             const recovery = this.readBlueprintRecovery(row.run_id);
@@ -863,7 +856,7 @@ export class GenerationRunRepository {
             this.assertBlueprintRecoveryWritable(runId);
             this.assertPlotOutlineWritable(runId);
             const run = this.get(runId), budget = this.budget(run.rootActionId);
-            binding(next);
+            this.assertClickOperation(runId, binding(next));
             if (budget.attempts.some(a => a.status === 'dispatch-marked') || budget.root.status !== 'paused' || budget.blockedCode || next.projectId !== run.binding.projectId)
                 fail('GENERATION_RESUME_REFUSED');
             budget.root.epoch = next.epoch;
@@ -875,10 +868,8 @@ export class GenerationRunRepository {
     }
     recoverInterrupted(): void {
         this.transaction(() => {
-            const roots = this.db().prepare(`SELECT root_action_id FROM generation_roots WHERE ${UNSEALED_ROOT}`).all() as {
-                root_action_id: string;
-            }[];
-            for (const { root_action_id: id } of roots) {
+            const roots = this.db().prepare(`SELECT root_action_id FROM generation_roots WHERE ${UNSEALED_ROOT} AND ${UNSETTLED_ROOT}`).pluck().all() as string[];
+            for (const id of roots) {
                 if (this.frozenRoot(id)) continue;
                 for (const attempt of this.budget(id).attempts)
                     if (attempt.status === 'dispatch-marked') {

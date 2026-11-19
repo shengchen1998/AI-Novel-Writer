@@ -33,6 +33,7 @@ import { externalFileGrants } from '../services/external-file-grant-service'
 import { projectAccess } from '../services/project-access'
 import {
   exportPortableProject,
+  ProjectArchiveServiceError,
   type ExportPortableProjectInput,
   type ExportPortableProjectReceipt,
   type PortableAssetProvider,
@@ -407,6 +408,8 @@ export function registerCloudBackupController(injected?: CloudBackupControllerDe
           })
         } catch (error) {
           if (signal.aborted) fail('CLOUD_BACKUP_CANCELLED')
+          if (error instanceof ProjectArchiveServiceError && error.code === 'PORTABLE_EXPORT_SOURCE_CHANGED') fail('CLOUD_BACKUP_SOURCE_CHANGED')
+          if (error instanceof ProjectArchiveServiceError && error.code === 'PORTABLE_EXPORT_AVATAR_DAMAGED') fail('CLOUD_BACKUP_AVATAR_DAMAGED')
           throw new CloudBackupControllerError('CLOUD_BACKUP_ARCHIVE_FAILED',
             error instanceof SchemaMigrationError ? error.damagedReviewCycle : undefined)
         }
@@ -422,6 +425,7 @@ export function registerCloudBackupController(injected?: CloudBackupControllerDe
           || currentBinding.lastSelectedParentGenerationIds.some((parent, index) => parent !== captured.parents[index])) {
           fail('CLOUD_BACKUP_BINDING_CONFLICT')
         }
+        const omitted = receipt.omittedReviewCycles ? { omittedReviewCycles: receipt.omittedReviewCycles } : {}
         const remoteAccount = account(deps.credentialStore, captured.accountId)
         const remoteGeneration = await deps.webDav.appendGeneration({
           account: remoteAccount,
@@ -448,6 +452,7 @@ export function registerCloudBackupController(injected?: CloudBackupControllerDe
             backupPoint: receipt.snapshotGeneration,
             bindingSaved: true,
             binding: saved,
+            ...omitted,
           }
         } catch {
           return {
@@ -458,6 +463,7 @@ export function registerCloudBackupController(injected?: CloudBackupControllerDe
             backupPoint: receipt.snapshotGeneration,
             bindingSaved: false,
             binding: null,
+            ...omitted,
           }
         }
       } finally {

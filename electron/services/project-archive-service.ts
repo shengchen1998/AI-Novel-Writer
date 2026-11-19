@@ -18,9 +18,11 @@ import {
 import { logicalTableName } from '../migrations/m07-chapter-recycle'
 import { readPortableCharacterAvatarRows } from '../repositories/character-asset-repository'
 import {
+  DEFAULT_PORTABLE_ARCHIVE_LIMITS,
   PORTABLE_PROJECT_FORMAT_VERSION,
   PORTABLE_SOURCE_SCHEMA_VERSION,
   PORTABLE_READABLE_SOURCE_SCHEMA_VERSIONS,
+  assertPortableExportSource,
   assertPortableSourceSchema,
   getPortableFieldPolicy,
   portablePathKey,
@@ -34,7 +36,12 @@ import {
   writePortableProjectArchive,
   type PortableArchiveSource,
 } from './portable-project-archive'
-import { backupProjectSqlite, type ProjectSqliteEvidence } from './sqlite-project-migration'
+import { snapshotProjectSqlite } from './sqlite-project-migration'
+import { withKnowledgeSourceGate } from './knowledge-source-gate'
+import { sqliteSchemaFingerprint } from '../migrations/sqlite-schema-adapter'
+import { inspectM03ReviewCycles, type UnprovableReviewCycle } from '../migrations/m03-review-cycle'
+import { SchemaMigrationError } from '../migrations/registry'
+import type { DamagedReviewCycle } from '../../src/shared/damaged-review-cycle'
 import {
   PORTABLE_TRANSFER_AUTHORITY_PATH,
   createPortableTransferAuthority,
@@ -158,7 +165,8 @@ export type ProjectArchiveServiceErrorCode =
   | 'PORTABLE_ASSET_MISSING'
   | 'PORTABLE_ASSET_UNSAFE'
   | 'PORTABLE_CONTEXT_INVALID'
-  | 'PORTABLE_SOURCE_CHANGED'
+  | 'PORTABLE_EXPORT_AVATAR_DAMAGED'
+  | 'PORTABLE_EXPORT_SOURCE_CHANGED'
   | 'PORTABLE_TARGET_INSIDE_SOURCE'
   | 'PORTABLE_UNSAFE_PROJECTION'
 
@@ -169,12 +177,18 @@ export class ProjectArchiveServiceError extends Error {
   }
 }
 
+/** 快照时读到的大小与 sha。打包按路径重读并比这份 sha，对不上就整次重来。 */
+export interface PortableSourceDigest {
+  byteSize: number
+  sha256: string
+}
+
+/** 内容二选一：bytes 是生成的小文件，sourcePath 是作品存储目录里交给 digestFile 算过的文件。 */
 export interface PortableProvidedFile {
   id: string
   archivePath: string
-  /** Empty only for provider-generated immutable bytes. */
-  sourcePath: string
   bytes?: Buffer
+  sourcePath?: string
   byteSize: number
   sha256: string
   disposition: Exclude<PortableEntryDisposition, 'portable-database' | 'avatar-asset'>
@@ -186,7 +200,6 @@ export interface PortableAssetSnapshot {
   omittedItems?: readonly { id: string; reason: PortableOmissionReason }[]
   transferReceiptIds?: readonly string[]
   historyProjectionIds?: readonly string[]
-  verifyUnchanged(): boolean | void | Promise<boolean | void>
 }
 
 export interface PortableAssetProvider {
@@ -195,6 +208,8 @@ export interface PortableAssetProvider {
     sourceDatabasePath: string
     projectSession: Readonly<ProjectSessionContext>
     snapshotGeneration: string
+    /** checked 是调用方查过项目根与链接时 lstat 到的身份，打开的文件必须就是它。 */
+    digestFile(sourcePath: string, checked: fs.BigIntStats): PortableSourceDigest
   }): PortableAssetSnapshot | Promise<PortableAssetSnapshot>
 }
 
@@ -227,6 +242,8 @@ export interface ExportPortableProjectReceipt {
   }
   entryCount: number
   requiresRuntimeFreezeGuard: true
+  /** 验不过、没放进存档的审修循环所在的章（ADR-0029）。 */
+  omittedReviewCycles?: readonly DamagedReviewCycle[]
 }
 
 interface HistoryProjection {
@@ -263,10 +280,6 @@ function contained(root: string, candidate: string): boolean {
   return relative === '' || relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 }
 
-function normalizedContained(root: string, candidate: string): boolean {
-  return contained(normalizedPath(root), normalizedPath(candidate))
-}
-
 function sameObject(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
   return left.dev === right.dev && left.ino === right.ino
 }
@@ -283,11 +296,11 @@ function safeDirectory(directory: string): void {
   }
 }
 
-function regularFile(file: string, missingCode: ProjectArchiveServiceErrorCode): fs.Stats {
+function regularFile(file: string, missingCode: ProjectArchiveServiceErrorCode): fs.BigIntStats {
   try {
     const absolute = path.resolve(file)
-    const info = fs.lstatSync(absolute)
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1
+    const info = fs.lstatSync(absolute, { bigint: true })
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n
       || normalizedPath(fs.realpathSync.native(absolute)) !== normalizedPath(absolute)) fail('PORTABLE_ASSET_UNSAFE')
     return info
   } catch (error) {
@@ -675,21 +688,39 @@ function projectReviewRecheckReceipt(value: unknown): Record<string, unknown> {
     }) }
 }
 
+function projectReviewSegment(usage: Record<string, unknown>): Record<string, unknown> {
+  const identity = object(usage.artifactIdentity, ['artifactId', 'epoch', 'fingerprint'])
+  // 没结算或请求失败的尝试没有结束原因，只带身份。
+  const result: Record<string, unknown> = usage.result === undefined ? {} : object(usage.result, ['usage', 'finishReason', 'failureCode', 'diagnostics'])
+  return {
+    artifactIdentity: { artifactId: safeId(identity.artifactId), epoch: safeId(identity.epoch),
+      fingerprint: projectReviewFingerprint(identity.fingerprint) },
+    ...(result.finishReason == null ? {} : { result: { finishReason: safeId(result.finishReason) } }),
+  }
+}
+
 function projectReviewUsage(value: unknown): Record<string, unknown> | null {
   if (value === null) return null
   const usage = parseJson(value) as Record<string, unknown>
-  if (!usage || typeof usage !== 'object' || Array.isArray(usage) || !usage.reviewRevisionEffect) return null
-  const identity = object(usage.artifactIdentity, ['artifactId', 'epoch', 'fingerprint'])
-  const result = object(usage.result, ['usage', 'finishReason', 'failureCode', 'diagnostics'])
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null
+  if (!usage.reviewRevisionEffect) {
+    if (!usage.artifactIdentity) return null
+    // 修稿续写时效果收据只落在最后一段，前面各段只有产物身份和结束原因；循环校验会逐段读这两项，所以不能丢。
+    // 投影不过的就不带：没被组合用到的尝试本来就不是证据，被用到的会在副本最后的从严校验里被拦下。
+    try { return projectReviewSegment(usage) }
+    catch (error) {
+      if (error instanceof ProjectArchiveServiceError && error.code === 'PORTABLE_UNSAFE_PROJECTION') return null
+      throw error
+    }
+  }
+  const segment = projectReviewSegment(usage)
   const effect = object(usage.reviewRevisionEffect, [
     'kind', 'id', 'index', 'contentHash', 'contextHash', 'artifact', 'compositionHash', 'reportVersion',
   ])
   if (effect.kind !== 'review' && effect.kind !== 'revision') fail('PORTABLE_UNSAFE_PROJECTION')
   if (effect.reportVersion !== undefined && (effect.reportVersion !== 2 || effect.kind !== 'review')) fail('PORTABLE_UNSAFE_PROJECTION')
   const projected: Record<string, unknown> = {
-    artifactIdentity: { artifactId: safeId(identity.artifactId), epoch: safeId(identity.epoch),
-      fingerprint: projectReviewFingerprint(identity.fingerprint) },
-    result: { finishReason: safeId(result.finishReason) },
+    ...segment,
     reviewRevisionEffect: { kind: effect.kind, id: safeInteger(effect.id, 1), index: safeInteger(effect.index, 1),
       contentHash: contentHash(effect.contentHash), contextHash: contentHash(effect.contextHash),
       artifact: projectReviewArtifactRef(effect.artifact),
@@ -820,7 +851,7 @@ function neutralValue(key: string, column: { type: string; notnull: number }, va
   return /INT|REAL|NUM|DEC|BOOL/u.test(column.type.toUpperCase()) ? 0 : ''
 }
 
-function recordId(table: string, row: Record<string, unknown>, rowid: number): string {
+function recordId(table: string, row: Record<string, unknown>, rowid: string): string {
   const fields = HISTORY_ID_COLUMNS[table] ?? []
   if (!fields.length) return `${table}:${rowid}`
   return fields.map(field => safeId(row[field])).join(':')
@@ -888,10 +919,20 @@ function draftThreadTaskProofs(db: InstanceType<typeof BetterSqlite>, reviewRoot
   return { receipts, bindings }
 }
 
-/** Shared C17 copy-only history projection. Call only on an isolated target staging DB. */
-export function sanitizePortableDatabase(databasePath: string): {
+/**
+ * Shared C17 copy-only history projection. Call only on an isolated target staging DB.
+ * omitReviewCycles：导出时验不过的审修循环。按根处理，与审修循环的校验同一单位：这些循环所在的根下的全部循环，投影前连同意见与合并快照从副本里删掉；
+ * 最后的校验仍从严，证明存档里没有坏循环。删掉以后根仍过不了投影，就带着这个根的定位报 MIGRATION_VERIFICATION_FAILED（指不出章节时定位不带章节）；其他失败原样抛出。
+ * 返回的 omittedReviewCycles 每个删掉的根一项，一根下有多条循环时不带章节。
+ * verifiedSchema：调用方已对字节相同的库跑过 assertPortableExportSource 时传它的结果，这里不再重验。
+ */
+export function sanitizePortableDatabase(databasePath: string, options: {
+  omitReviewCycles?: ReadonlyMap<string, DamagedReviewCycle>
+  verifiedSchema?: ReturnType<typeof assertPortableSourceSchema>
+} = {}): {
   history: HistoryProjection[]
   tableCounts: Record<string, number>
+  omittedReviewCycles: DamagedReviewCycle[]
 } {
   const db = new BetterSqlite(databasePath, { fileMustExist: true })
   try {
@@ -899,12 +940,28 @@ export function sanitizePortableDatabase(databasePath: string): {
     db.pragma('secure_delete = ON')
     const schemaVersion = PORTABLE_READABLE_SOURCE_SCHEMA_VERSIONS.find(version => version === db.pragma('user_version', { simple: true }))
     if (schemaVersion === undefined) throw new Error('PORTABLE_SCHEMA_UNSUPPORTED')
-    const sourceSchema = assertPortableSourceSchema(db, schemaVersion)
+    const omitted = options.omitReviewCycles ?? new Map<string, DamagedReviewCycle>()
+    const sourceSchema = options.verifiedSchema ?? assertPortableSourceSchema(db, schemaVersion, () => new Set(omitted.keys()))
+    // 必须在算 reviewRoots 之前删，删掉后这条根才会按普通根投影。验不过的循环自己的链接不可信，只取它的根。
+    const omittedRoots = new Map<string, DamagedReviewCycle>()
+    if (omitted.size) {
+      const rootOf = db.prepare('SELECT root_action_id FROM review_cycles WHERE cycle_id=?').pluck()
+      const cyclesOn = db.prepare('SELECT COUNT(*) FROM review_cycles WHERE root_action_id=?').pluck()
+      for (const [cycleId, location] of omitted) {
+        const root = rootOf.get(cycleId) as string
+        omittedRoots.set(root, cyclesOn.get(root) === 1 ? location : { chapterNumber: null, chapterTitle: '', inTrash: false })
+      }
+      const omit = db.prepare('DELETE FROM review_cycles WHERE root_action_id=?')
+      db.transaction(() => { for (const root of omittedRoots.keys()) omit.run(root) })()
+    }
     const avatarRows = readPortableCharacterAvatarRows(db)
     const reviewRoots = new Set((db.prepare('SELECT root_action_id FROM review_cycles').all() as Array<{
       root_action_id: string }>).map(row => row.root_action_id))
-    const reviewRuns = new Set((db.prepare('SELECT run_id,root_action_id FROM generation_runs').all() as Array<{
-      run_id: string; root_action_id: string }>).filter(row => reviewRoots.has(row.root_action_id)).map(row => row.run_id))
+    // 对不上根的产物不归章，也不按审稿证据投影。
+    const artifactRoots = new Map((db.prepare(`SELECT a.artifact_id,t.root_action_id FROM generation_artifacts a
+      JOIN generation_attempts t ON t.attempt_id=a.attempt_id AND t.run_id=a.run_id
+      JOIN generation_runs r ON r.run_id=a.run_id AND r.root_action_id=t.root_action_id`).all() as Array<{
+      artifact_id: string; root_action_id: string }>).map(row => [row.artifact_id, row.root_action_id]))
     const draftProofs = draftThreadTaskProofs(db, reviewRoots)
     for (const row of avatarRows) {
       if ('recordId' in row) safeId(row.recordId)
@@ -937,7 +994,7 @@ export function sanitizePortableDatabase(databasePath: string): {
           && !portableRedactionFor(table, column.name))) fail('PORTABLE_UNSAFE_PROJECTION')
         const hasProjection = policies.some(policy => policy.disposition === 'redacted-projection')
         const hasHistory = policies.some(policy => policy.disposition === 'historical-nonreplayable')
-        const rows = db.prepare(`SELECT rowid AS __portable_rowid__, * FROM ${quote(physical)}`).all() as Array<Record<string, unknown>>
+        const rows = db.prepare(`SELECT CAST(rowid AS TEXT) AS __portable_rowid__, * FROM ${quote(physical)}`).all() as Array<Record<string, unknown>>
         tableCounts[`table.${table}`] = rows.length
         const updates = columns.filter((_column, index) => {
           const disposition = policies[index]!.disposition
@@ -947,31 +1004,39 @@ export function sanitizePortableDatabase(databasePath: string): {
           ? db.prepare(`UPDATE ${quote(physical)} SET ${updates.map(column => `${quote(column.name)}=?`).join(',')} WHERE rowid=?`)
           : null
         for (const row of rows) {
-          const reviewProof = table === 'generation_artifacts' ? reviewRuns.has(String(row.run_id))
-            : reviewRoots.has(String(row.root_action_id))
-          if (hasProjection || hasHistory) {
-            const safe = projectionForRow(table, row, columns)
-            const id = recordId(table, row, Number(row.__portable_rowid__))
-            const projectionId = `history:${table}:${id}`
-            history.push({
-              projectionId,
-              table,
-              recordId: id,
-              terminalState: terminalState(row),
-              projection: safe.projection,
-              projectionHash: sha256(stableJson(safe.projection)),
-              excludedFields: safe.excludedFields,
-              nonReplayable: true,
-              originalReceiptVerified: false,
-            })
+          const root = table === 'generation_artifacts' ? artifactRoots.get(String(row.artifact_id)) : String(row.root_action_id)
+          const reviewProof = root !== undefined && reviewRoots.has(root)
+          try {
+            if (hasProjection || hasHistory) {
+              const safe = projectionForRow(table, row, columns)
+              const id = recordId(table, row, String(row.__portable_rowid__))
+              const projectionId = `history:${table}:${id}`
+              history.push({
+                projectionId,
+                table,
+                recordId: id,
+                terminalState: terminalState(row),
+                projection: safe.projection,
+                projectionHash: sha256(stableJson(safe.projection)),
+                excludedFields: safe.excludedFields,
+                nonReplayable: true,
+                originalReceiptVerified: false,
+              })
+            }
+            const draftProof = table === 'generation_attempts' ? draftProofs.receipts.get(String(row.attempt_id))
+              : table === 'generation_runs' ? draftProofs.bindings.get(String(row.run_id)) : undefined
+            const changed = update?.run(...updates.map(column => {
+              const key = `${table}.${column.name}`
+              if (draftProof !== undefined && (key === 'generation_attempts.usage_receipt_json' || key === 'generation_runs.binding_json')) return draftProof
+              return neutralValue(key, column, row[column.name], reviewProof)
+            }), BigInt(String(row.__portable_rowid__))).changes
+            if (changed !== undefined && changed !== 1) throw new Error('PORTABLE_REDACTION_MISSED_ROW')
+          } catch (error) {
+            const location = root === undefined ? undefined : omittedRoots.get(root)
+            if (error instanceof ProjectArchiveServiceError && error.code === 'PORTABLE_UNSAFE_PROJECTION' && location)
+              throw new SchemaMigrationError('MIGRATION_VERIFICATION_FAILED', location)
+            throw error
           }
-          const draftProof = table === 'generation_attempts' ? draftProofs.receipts.get(String(row.attempt_id))
-            : table === 'generation_runs' ? draftProofs.bindings.get(String(row.run_id)) : undefined
-          if (update) update.run(...updates.map(column => {
-            const key = `${table}.${column.name}`
-            if (draftProof !== undefined && (key === 'generation_attempts.usage_receipt_json' || key === 'generation_runs.binding_json')) return draftProof
-            return neutralValue(key, column, row[column.name], reviewProof)
-          }), row.__portable_rowid__)
           for (const [index, column] of columns.entries()) {
             if (policies[index]!.disposition !== 'validated-relative') continue
             const value = row[column.name]
@@ -985,42 +1050,97 @@ export function sanitizePortableDatabase(databasePath: string): {
     db.exec('VACUUM')
     db.pragma('wal_checkpoint(TRUNCATE)')
     assertPortableSourceSchema(db, schemaVersion)
-    return { history, tableCounts }
+    return { history, tableCounts, omittedReviewCycles: [...omittedRoots.values()] }
   } finally { db.close() }
 }
 
-function writePrivateFile(file: string, bytes: Buffer): void {
+/** 先建文件并登记再写：写到一半失败（如磁盘满），清理也认得它。 */
+function writeOwnedFile(attempt: OwnedAttempt, file: string, bytes: Buffer): void {
   const descriptor = fs.openSync(file, 'wx', 0o600)
-  try { fs.writeFileSync(descriptor, bytes); fs.fsyncSync(descriptor) }
-  finally { fs.closeSync(descriptor) }
+  try {
+    recordOwnedFile(attempt, file)
+    fs.writeFileSync(descriptor, bytes); fs.fsyncSync(descriptor)
+  } finally { fs.closeSync(descriptor) }
 }
 
-async function verifyFile(file: PortableProvidedFile, allowedRoot: string): Promise<void> {
-  if (!file.id || !PROVIDED_DISPOSITIONS.has(file.disposition) || !Number.isSafeInteger(file.byteSize)
-    || file.byteSize < 0 || !HASH.test(file.sha256)) fail('PORTABLE_ASSET_UNSAFE')
-  portablePathKey(file.archivePath)
-  if (file.bytes !== undefined) {
-    if (!Buffer.isBuffer(file.bytes) || file.bytes.length !== file.byteSize || sha256(file.bytes) !== file.sha256) {
-      fail('PORTABLE_SOURCE_CHANGED')
+const DIGEST_CHUNK_BYTES = 1024 * 1024
+
+function sourceChangedDuringExport(): never {
+  throw new PortableProjectArchiveError('PORTABLE_ARCHIVE_SOURCE_CHANGED')
+}
+
+/** 打开后再查路径上没有链接、路径指向的仍是打开的这个文件：查过之后父目录被换成联接也拦得下。 */
+function digestCheckedFile(sourcePath: string, checked: fs.BigIntStats): PortableSourceDigest {
+  const source = fs.openSync(sourcePath, 'r')
+  try {
+    const opened = fs.fstatSync(source, { bigint: true })
+    if (!sameObject(opened, checked)) sourceChangedDuringExport()
+    if (opened.nlink !== 1n) fail('PORTABLE_ASSET_UNSAFE')
+    safeDirectory(path.dirname(sourcePath))
+    if (!sameObject(fs.lstatSync(sourcePath, { bigint: true }), opened)) sourceChangedDuringExport()
+    if (opened.size > BigInt(DEFAULT_PORTABLE_ARCHIVE_LIMITS.maxEntryBytes)) throw new PortableProjectArchiveError('PORTABLE_ARCHIVE_LIMIT_EXCEEDED')
+    const size = Number(opened.size)
+    const digest = createHash('sha256'), buffer = Buffer.allocUnsafe(DIGEST_CHUNK_BYTES)
+    let byteSize = 0
+    while (byteSize < size) {
+      const read = fs.readSync(source, buffer, 0, Math.min(buffer.length, size - byteSize), null)
+      if (read === 0) break
+      digest.update(buffer.subarray(0, read))
+      byteSize += read
     }
-    return
-  }
-  const sourcePath = path.resolve(file.sourcePath)
-  if (!normalizedContained(allowedRoot, sourcePath)) fail('PORTABLE_ASSET_UNSAFE')
-  safeDirectory(allowedRoot)
-  const info = regularFile(file.sourcePath, 'PORTABLE_ASSET_MISSING')
-  if (!normalizedContained(fs.realpathSync.native(allowedRoot), fs.realpathSync.native(sourcePath))) {
-    fail('PORTABLE_ASSET_UNSAFE')
-  }
-  if (info.size !== file.byteSize || await hashFile(file.sourcePath) !== file.sha256) fail('PORTABLE_SOURCE_CHANGED')
+    if (byteSize !== size || fs.readSync(source, buffer, 0, 1, null) > 0) sourceChangedDuringExport()
+    return { byteSize, sha256: digest.digest('hex') }
+  } finally { fs.closeSync(source) }
 }
 
-function sameEvidence(left: ProjectSqliteEvidence, right: ProjectSqliteEvidence): boolean {
-  return left.schemaVersion === right.schemaVersion && left.fingerprint === right.fingerprint
-    && stableJson(left.domain) === stableJson(right.domain)
-    && stableJson(left.preIdentityDomain) === stableJson(right.preIdentityDomain)
-    && stableJson(left.preAssetDomain) === stableJson(right.preAssetDomain)
+/** 字节与声明的大小、sha 对不上时，打包逐文件流式核对会拒绝，这里只查元数据。 */
+function verifyFile(file: PortableProvidedFile, projectStorageRoot: string): void {
+  const content = file.sourcePath === undefined
+    ? Buffer.isBuffer(file.bytes) && file.bytes.length === file.byteSize
+    : file.bytes === undefined && contained(projectStorageRoot, path.resolve(file.sourcePath))
+  if (!file.id || !PROVIDED_DISPOSITIONS.has(file.disposition) || !content || !HASH.test(file.sha256)) fail('PORTABLE_ASSET_UNSAFE')
+  portablePathKey(file.archivePath)
 }
+
+/** 打包器查过之后、打开之前资料被删，它报的是原始 ENOENT。 */
+function missingSource(error: unknown, sourcePaths: Iterable<string>): boolean {
+  const missing = (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT' ? (error as NodeJS.ErrnoException).path : undefined
+  if (!missing) return false
+  const resolved = normalizedPath(path.resolve(missing))
+  for (const sourcePath of sourcePaths) if (normalizedPath(path.resolve(sourcePath)) === resolved) return true
+  return false
+}
+
+/** 打包器不查硬链接，这里补上。快照后被删掉的算资料有改动。 */
+function assertSourceStillOwned(sourcePath: string): void {
+  const info = fs.lstatSync(sourcePath, { bigint: true, throwIfNoEntry: false })
+  if (!info) sourceChangedDuringExport()
+  if (info.nlink !== 1n) throw new PortableProjectArchiveError('PORTABLE_ARCHIVE_SOURCE_UNSAFE')
+}
+
+/** 只包住资料阶段的错。库一侧的错不包，所以永远不会被重来。 */
+class AssetPhaseFailure extends Error {
+  constructor(readonly failure: unknown) { super('PORTABLE_ASSET_PHASE_FAILED') }
+}
+
+async function assetPhase<T>(work: () => T | Promise<T>): Promise<T> {
+  try { return await work() }
+  catch (error) { throw new AssetPhaseFailure(error) }
+}
+
+/** 资料阶段里也不重来：重来也不会变。 */
+const NOT_RETRIED = new Set(['PORTABLE_ARCHIVE_LIMIT_EXCEEDED'])
+
+function failureCode(error: unknown): string | undefined {
+  const { code, message } = (typeof error === 'object' && error !== null ? error : {}) as { code?: unknown; message?: unknown }
+  if (typeof code === 'string') return code
+  return typeof message === 'string' && /^[A-Z][A-Z0-9_]*$/u.test(message) ? message : undefined
+}
+
+function sourceChanged(error: unknown): boolean {
+  return error instanceof PortableProjectArchiveError && error.code === 'PORTABLE_ARCHIVE_SOURCE_CHANGED'
+}
+
 
 async function hashFile(file: string): Promise<string> {
   const digest = createHash('sha256')
@@ -1063,21 +1183,36 @@ function assertContextShape(context: ProjectSessionContext, sourceRoot: string):
 
 async function assertCurrentContext(input: ExportPortableProjectInput, context: Readonly<ProjectSessionContext>, sourceRoot: string): Promise<void> {
   try {
-    if (await input.assertCurrentContext(context, sourceRoot) === false) fail('PORTABLE_SOURCE_CHANGED')
+    if (await input.assertCurrentContext(context, sourceRoot) === false) fail('PORTABLE_CONTEXT_INVALID')
   }
-  catch { fail('PORTABLE_SOURCE_CHANGED') }
+  catch { fail('PORTABLE_CONTEXT_INVALID') }
 }
 
-function mapSourceChange(error: unknown): never {
-  if (error instanceof ProjectArchiveServiceError) throw error
-  if (error instanceof Error && error.message === 'PROJECT_MIGRATION_SOURCE_CHANGED') fail('PORTABLE_SOURCE_CHANGED')
-  if (error instanceof Error && ['UNRECOGNIZED_SCHEMA', 'NEWER_SCHEMA_READ_ONLY'].includes(error.message)) {
-    throw new Error('PORTABLE_SCHEMA_UNSUPPORTED')
-  }
-  throw error
-}
+const omittable = (cycles: readonly UnprovableReviewCycle[]): ReadonlyMap<string, DamagedReviewCycle> =>
+  new Map(cycles.flatMap(item => item.cycleId === null ? [] : [[item.cycleId, item.location] as const]))
 
+/** 资料阶段出错：丢掉这次的临时目录，整次重来一次，仍失败报第二次的错。重来时库文件已被换掉就拒绝。本地导出和云备份都走这里。 */
 export async function exportPortableProject(input: ExportPortableProjectInput): Promise<ExportPortableProjectReceipt> {
+  const source: SourceDatabasePin = {}
+  try { return await exportPortableProjectOnce(input, source) }
+  catch (error) {
+    if (!(error instanceof AssetPhaseFailure)) throw error
+    const code = failureCode(error.failure)
+    if (code && NOT_RETRIED.has(code)) throw error.failure
+    console.warn('[portable-export] 资料阶段出错，整次重来一次', { code })
+  }
+  try { return await exportPortableProjectOnce(input, source) }
+  catch (error) {
+    const failure = error instanceof AssetPhaseFailure ? error.failure : error
+    if (sourceChanged(failure)) fail('PORTABLE_EXPORT_SOURCE_CHANGED')
+    throw failure
+  }
+}
+
+/** 只比 dev、ino：写库会改大小和修改时间，不改身份。 */
+interface SourceDatabasePin { database?: fs.BigIntStats }
+
+async function exportPortableProjectOnce(input: ExportPortableProjectInput, source: SourceDatabasePin): Promise<ExportPortableProjectReceipt> {
   const sourceRoot = path.resolve(input.sourceProjectRoot)
   const targetPath = path.resolve(input.targetArchivePath)
   const attemptParent = path.resolve(input.attemptParentPath)
@@ -1090,7 +1225,12 @@ export async function exportPortableProject(input: ExportPortableProjectInput): 
   const projectStorageRoot = path.join(sourceRoot, CANONICAL_PROJECT_DIRECTORY)
   safeDirectory(projectStorageRoot)
   const sourceDatabasePath = path.join(projectStorageRoot, CANONICAL_PROJECT_DATABASE)
-  regularFile(sourceDatabasePath, 'PORTABLE_ASSET_MISSING')
+  const checkedDatabase = regularFile(sourceDatabasePath, 'PORTABLE_ASSET_MISSING')
+  if (source.database && !sameObject(source.database, checkedDatabase)) throw new Error('PROJECT_MIGRATION_SOURCE_CHANGED')
+  source.database = checkedDatabase
+  const assertSameDatabase = () => {
+    if (!sameObject(regularFile(sourceDatabasePath, 'PORTABLE_ASSET_MISSING'), checkedDatabase)) throw new Error('PROJECT_MIGRATION_SOURCE_CHANGED')
+  }
   const canonicalManifestPath = path.join(projectStorageRoot, 'project.json')
   regularFile(canonicalManifestPath, 'PORTABLE_ASSET_MISSING')
   const canonicalManifest = parseCanonicalProjectManifest(JSON.parse(
@@ -1103,35 +1243,73 @@ export async function exportPortableProject(input: ExportPortableProjectInput): 
   const attemptRoot = attempt.root
   try {
     const sourceSnapshotPath = path.join(attemptRoot, 'source.db')
-    let firstEvidence: ProjectSqliteEvidence
-    try { firstEvidence = await backupProjectSqlite({ sourceDatabasePath, targetDatabasePath: sourceSnapshotPath }) }
-    catch (error) { return mapSourceChange(error) }
-    recordOwnedFile(attempt, sourceSnapshotPath)
-    const sourceFreeze = readPortableRuntimeFreeze(sourceRoot)
-    const sourceSnapshot = new BetterSqlite(sourceSnapshotPath, { readonly: true, fileMustExist: true })
-    let avatarRows: ReturnType<typeof readPortableCharacterAvatarRows>
-    let sourceSchema: ReturnType<typeof assertPortableSourceSchema>
-    try {
-      sourceSchema = assertPortableSourceSchema(sourceSnapshot)
-      if (sourceFreeze.active) readPortableCurrentAuthority({ database: sourceSnapshot, projectStorageRoot, projectId: canonicalManifest.projectId })
-      avatarRows = readPortableCharacterAvatarRows(sourceSnapshot)
-    } finally { sourceSnapshot.close() }
-    recordOwnedFileIfPresent(attempt, `${sourceSnapshotPath}-wal`)
-    recordOwnedFileIfPresent(attempt, `${sourceSnapshotPath}-shm`)
+    // 知识库的写入都持这把闸门。从取库快照到读完知识库一直持着，存档里的知识库就是库快照那一刻的，不会比库新。
+    const { sourceFreeze, sourceSchema, sourceFingerprint, unprovable, avatarRows, avatarFiles, avatarReferenceProjections, provided } =
+      await withKnowledgeSourceGate(projectStorageRoot, async () => {
+        // 排队等闸门期间作品可能被关掉或换掉，取快照前重查。
+        await assertCurrentContext(input, frozenContext, sourceRoot)
+        assertSameDatabase()
+        try { await snapshotProjectSqlite({ sourceDatabasePath, targetDatabasePath: sourceSnapshotPath, sourceIdentity: checkedDatabase }) }
+        finally { recordOwnedFileIfPresent(attempt, sourceSnapshotPath) }
+        const sourceFreeze = readPortableRuntimeFreeze(sourceRoot)
+        const sourceSnapshot = new BetterSqlite(sourceSnapshotPath, { readonly: true, fileMustExist: true })
+        let avatarRows: ReturnType<typeof readPortableCharacterAvatarRows>
+        let sourceSchema: ReturnType<typeof assertPortableSourceSchema>
+        let sourceFingerprint: string
+        let unprovable: readonly UnprovableReviewCycle[] = []
+        try {
+          // 校验时才知道有没有验不过的审修循环，有才再扫一遍取清单放行；健康的书只扫一遍。
+          const accepted = () => new Set(omittable(unprovable = inspectM03ReviewCycles(sourceSnapshot).unprovable).keys())
+          sourceSchema = assertPortableExportSource(sourceSnapshot, accepted)
+          sourceFingerprint = sqliteSchemaFingerprint(sourceSnapshot)
+          if (sourceFreeze.active) readPortableCurrentAuthority({ database: sourceSnapshot, projectStorageRoot, projectId: canonicalManifest.projectId })
+          avatarRows = readPortableCharacterAvatarRows(sourceSnapshot)
+        } finally {
+          sourceSnapshot.close()
+          recordOwnedFileIfPresent(attempt, `${sourceSnapshotPath}-wal`)
+          recordOwnedFileIfPresent(attempt, `${sourceSnapshotPath}-shm`)
+        }
+
+        const { avatarFiles, avatarReferenceProjections, provided } = await assetPhase(async () => {
+          const avatarReferenceProjections: Array<Record<string, unknown>> = []
+          const digestFile = (sourcePath: string, checked: fs.BigIntStats) => {
+            if (!contained(projectStorageRoot, path.resolve(sourcePath))) fail('PORTABLE_ASSET_UNSAFE')
+            return digestCheckedFile(sourcePath, checked)
+          }
+          const avatarFiles: Array<{ entry: PortableProjectManifestEntry; sourcePath: string }> = []
+          for (const row of avatarRows) {
+            if (row.kind === 'unresolved-reference') {
+              avatarReferenceProjections.push({ ...row, nonReplayable: true })
+              continue
+            }
+            const relativePath = portablePathKey(row.relativePath)
+            if (!relativePath) fail('PORTABLE_ASSET_UNSAFE')
+            const sourcePath = path.resolve(projectStorageRoot, ...row.relativePath.split('/'))
+            if (!contained(projectStorageRoot, sourcePath)) fail('PORTABLE_ASSET_UNSAFE')
+            const digest = digestFile(sourcePath, regularFile(sourcePath, 'PORTABLE_ASSET_MISSING'))
+            if (digest.byteSize !== row.byteSize || digest.sha256 !== row.contentHash) fail('PORTABLE_EXPORT_AVATAR_DAMAGED')
+            avatarFiles.push({ entry: { path: row.relativePath, byteSize: row.byteSize, sha256: row.contentHash,
+              disposition: 'avatar-asset' }, sourcePath })
+          }
+          const provided = await input.assets.snapshot({
+            sourceProjectRoot: sourceRoot,
+            sourceDatabasePath: sourceSnapshotPath,
+            projectSession: frozenContext,
+            snapshotGeneration,
+            digestFile,
+          })
+          return { avatarFiles, avatarReferenceProjections, provided }
+        })
+        return { sourceFreeze, sourceSchema, sourceFingerprint, unprovable, avatarRows, avatarFiles, avatarReferenceProjections, provided }
+      })
 
     const portableDatabasePath = path.join(attemptRoot, 'project.db')
     fs.copyFileSync(sourceSnapshotPath, portableDatabasePath, fs.constants.COPYFILE_EXCL)
     recordOwnedFile(attempt, portableDatabasePath)
-    const sanitized = sanitizePortableDatabase(portableDatabasePath)
+    const sanitized = sanitizePortableDatabase(portableDatabasePath, { omitReviewCycles: omittable(unprovable), verifiedSchema: sourceSchema })
     recordOwnedFile(attempt, portableDatabasePath)
     input.__testHooks?.afterPortableDatabaseCreated?.(attemptRoot)
 
-    const provided = await input.assets.snapshot({
-      sourceProjectRoot: sourceRoot,
-      sourceDatabasePath: sourceSnapshotPath,
-      projectSession: frozenContext,
-      snapshotGeneration,
-    })
     const sources: PortableArchiveSource[] = []
     const entryKeys = new Set<string>()
     const addSource = (entry: PortableProjectManifestEntry, sourcePath: string) => {
@@ -1142,7 +1320,7 @@ export async function exportPortableProject(input: ExportPortableProjectInput): 
     }
     const databaseInfo = regularFile(portableDatabasePath, 'PORTABLE_ASSET_MISSING')
     const portableDatabaseSha256 = await hashFile(portableDatabasePath)
-    addSource({ path: CANONICAL_PROJECT_DATABASE, byteSize: databaseInfo.size,
+    addSource({ path: CANONICAL_PROJECT_DATABASE, byteSize: Number(databaseInfo.size),
       sha256: portableDatabaseSha256, disposition: 'portable-database' }, portableDatabasePath)
 
     const portableDatabase = new BetterSqlite(portableDatabasePath, { readonly: true, fileMustExist: true })
@@ -1160,35 +1338,19 @@ export async function exportPortableProject(input: ExportPortableProjectInput): 
     recordOwnedFileIfPresent(attempt, `${portableDatabasePath}-shm`)
     const transferBytes = serializePortableTransferAuthority(transferAuthority)
     const transferPath = path.join(attemptRoot, 'portable-transfer-authority.json')
-    writePrivateFile(transferPath, transferBytes)
-    recordOwnedFile(attempt, transferPath)
+    writeOwnedFile(attempt, transferPath, transferBytes)
     addSource({ path: PORTABLE_TRANSFER_AUTHORITY_PATH, byteSize: transferBytes.length,
       sha256: sha256(transferBytes), disposition: 'transfer-receipt' }, transferPath)
 
-    const avatarReferenceProjections: Array<Record<string, unknown>> = []
-    for (const row of avatarRows) {
-      if (row.kind === 'unresolved-reference') {
-        avatarReferenceProjections.push({ ...row, nonReplayable: true })
-        continue
-      }
-      const relativePath = portablePathKey(row.relativePath)
-      if (!relativePath) fail('PORTABLE_ASSET_UNSAFE')
-      const sourcePath = path.resolve(projectStorageRoot, ...row.relativePath.split('/'))
-      if (!contained(projectStorageRoot, sourcePath)) fail('PORTABLE_ASSET_UNSAFE')
-      const info = regularFile(sourcePath, 'PORTABLE_ASSET_MISSING')
-      if (info.size !== row.byteSize || await hashFile(sourcePath) !== row.contentHash) fail('PORTABLE_SOURCE_CHANGED')
-      addSource({ path: row.relativePath, byteSize: row.byteSize, sha256: row.contentHash,
-        disposition: 'avatar-asset' }, sourcePath)
-    }
-
+    const projectSources = avatarFiles.map(({ sourcePath }) => sourcePath)
+    for (const { entry, sourcePath } of avatarFiles) addSource(entry, sourcePath)
     for (const [index, file] of provided.files.entries()) {
-      await verifyFile(file, projectStorageRoot)
-      let sourcePath: string
-      if (file.bytes !== undefined) {
+      verifyFile(file, projectStorageRoot)
+      let sourcePath = file.sourcePath
+      if (sourcePath === undefined) {
         sourcePath = path.join(attemptRoot, `provided-${index}`)
-        writePrivateFile(sourcePath, file.bytes)
-        recordOwnedFile(attempt, sourcePath)
-      } else sourcePath = file.sourcePath
+        writeOwnedFile(attempt, sourcePath, file.bytes!)
+      } else projectSources.push(sourcePath)
       addSource({ path: file.archivePath, byteSize: file.byteSize, sha256: file.sha256,
         disposition: file.disposition }, sourcePath)
     }
@@ -1205,29 +1367,9 @@ export async function exportPortableProject(input: ExportPortableProjectInput): 
     const historyBytes = Buffer.from(stableJson(historyDocument), 'utf8')
     parsePortableRuntimeFreeze(historyBytes)
     const historyPath = path.join(attemptRoot, 'portable-runtime-freeze.json')
-    writePrivateFile(historyPath, historyBytes)
-    recordOwnedFile(attempt, historyPath)
+    writeOwnedFile(attempt, historyPath, historyBytes)
     addSource({ path: 'portable-runtime-freeze.json', byteSize: historyBytes.length,
       sha256: sha256(historyBytes), disposition: 'history-projection' }, historyPath)
-
-    await assertCurrentContext(input, frozenContext, sourceRoot)
-    const verificationSnapshotPath = path.join(attemptRoot, 'source-verification.db')
-    let secondEvidence: ProjectSqliteEvidence
-    try { secondEvidence = await backupProjectSqlite({ sourceDatabasePath, targetDatabasePath: verificationSnapshotPath }) }
-    catch (error) { return mapSourceChange(error) }
-    recordOwnedFile(attempt, verificationSnapshotPath)
-    if (!sameEvidence(firstEvidence, secondEvidence)) fail('PORTABLE_SOURCE_CHANGED')
-    let providerUnchanged: boolean | void
-    try { providerUnchanged = await provided.verifyUnchanged() }
-    catch { fail('PORTABLE_SOURCE_CHANGED') }
-    if (providerUnchanged === false) fail('PORTABLE_SOURCE_CHANGED')
-    for (const file of provided.files) await verifyFile(file, projectStorageRoot)
-    for (const source of sources.filter(item => item.entry.disposition === 'avatar-asset')) {
-      const info = regularFile(source.sourcePath, 'PORTABLE_ASSET_MISSING')
-      if (info.size !== source.entry.byteSize || await hashFile(source.sourcePath) !== source.entry.sha256) {
-        fail('PORTABLE_SOURCE_CHANGED')
-      }
-    }
 
     const entries = sources.map(source => source.entry)
     const payloadBytes = entries.reduce((sum, entry) => sum + entry.byteSize, 0)
@@ -1264,30 +1406,19 @@ export async function exportPortableProject(input: ExportPortableProjectInput): 
       historyProjectionIds,
     }
     const stagedArchivePath = path.join(attemptRoot, 'portable-project.archive')
-    const archiveReceipt = await writePortableProjectArchive({ manifest, sources, targetPath: stagedArchivePath })
+    const archiveReceipt = await assetPhase(() => {
+      for (const sourcePath of projectSources) assertSourceStillOwned(sourcePath)
+      return writePortableProjectArchive({ manifest, sources, targetPath: stagedArchivePath })
+        .catch((error: unknown) => {
+          if (missingSource(error, projectSources)) sourceChangedDuringExport()
+          throw error
+        })
+    })
     recordOwnedFile(attempt, stagedArchivePath)
     input.__testHooks?.afterArchiveBuilt?.(stagedArchivePath)
 
     await assertCurrentContext(input, frozenContext, sourceRoot)
-    const finalVerificationSnapshotPath = path.join(attemptRoot, 'source-final-verification.db')
-    let finalEvidence: ProjectSqliteEvidence
-    try { finalEvidence = await backupProjectSqlite({
-      sourceDatabasePath,
-      targetDatabasePath: finalVerificationSnapshotPath,
-    }) } catch (error) { return mapSourceChange(error) }
-    recordOwnedFile(attempt, finalVerificationSnapshotPath)
-    if (!sameEvidence(firstEvidence, finalEvidence)) fail('PORTABLE_SOURCE_CHANGED')
-    let finalProviderUnchanged: boolean | void
-    try { finalProviderUnchanged = await provided.verifyUnchanged() }
-    catch { fail('PORTABLE_SOURCE_CHANGED') }
-    if (finalProviderUnchanged === false) fail('PORTABLE_SOURCE_CHANGED')
-    for (const file of provided.files) await verifyFile(file, projectStorageRoot)
-    for (const source of sources.filter(item => item.entry.disposition === 'avatar-asset')) {
-      const info = regularFile(source.sourcePath, 'PORTABLE_ASSET_MISSING')
-      if (info.size !== source.entry.byteSize || await hashFile(source.sourcePath) !== source.entry.sha256) {
-        fail('PORTABLE_SOURCE_CHANGED')
-      }
-    }
+    assertSameDatabase()
     const targetInfo = publishStagedArchive(stagedArchivePath, targetPath)
     return {
       originProjectId: canonicalManifest.projectId,
@@ -1295,13 +1426,14 @@ export async function exportPortableProject(input: ExportPortableProjectInput): 
       targetSha256: await hashFile(targetPath),
       targetByteSize: Number(targetInfo.size),
       sourceEvidence: {
-        schemaVersion: firstEvidence.schemaVersion,
-        schemaFingerprint: firstEvidence.fingerprint,
+        schemaVersion: PORTABLE_SOURCE_SCHEMA_VERSION,
+        schemaFingerprint: sourceFingerprint,
         tableCount: sourceSchema.tables,
         fieldCount: sourceSchema.fields,
       },
       entryCount: archiveReceipt.entryCount,
       requiresRuntimeFreezeGuard: true,
+      ...(sanitized.omittedReviewCycles.length ? { omittedReviewCycles: sanitized.omittedReviewCycles } : {}),
     }
   } finally {
     cleanupAttempt(attempt)

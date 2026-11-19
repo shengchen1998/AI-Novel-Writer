@@ -1,10 +1,13 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createRequire } from 'node:module'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { CloudBackupProjectSessionContext } from '../../../src/shared/cloud-backup'
+import type { CloudBackupFailure, CloudBackupProjectSessionContext } from '../../../src/shared/cloud-backup'
+import { damagedReviewCycleMessage, displayedErrorMessage } from '../../../src/i18n/app-errors'
+import { shown } from '../../../src/i18n/__tests__/shown-locale'
 import type { CloudProjectBinding } from '../../services/cloud-project-binding-store'
 import { ExternalFileGrantService } from '../../services/external-file-grant-service'
 import { WebDavBackupError } from '../../services/webdav-backup-service'
@@ -13,7 +16,7 @@ import {
   type CloudBackupControllerDependencies,
 } from '../cloud-backup-controller'
 import { removeDirectoryWithWindowsRetry } from '../../utils/remove-directory'
-import { exportPortableProject } from '../../services/project-archive-service'
+import { exportPortableProject, ProjectArchiveServiceError } from '../../services/project-archive-service'
 import { restorePortableProject } from '../../services/project-restore-service'
 import { closeProjectDatabase, getProjectDb, initProjectDatabase } from '../../database'
 import { CURRENT_DESKTOP_SCHEMA_VERSION } from '../../migrations/desktop-registry'
@@ -21,6 +24,8 @@ import { SchemaMigrationError } from '../../migrations/registry'
 import { continuityBaseline, SCHEMA8_CONTINUITY_ARCHIVE, SCHEMA8_EXPECTED_BASELINE } from '../../../test/helpers/schema8-continuity-archive'
 import { createPortableProjectAssetProvider } from '../../services/portable-project-assets'
 import { createProjectArchiveRoundtripFixture } from '../../../test/desktop/project-archive.fixture'
+import { breakReviewProof, seedReviewedBook } from '../../../test/helpers/review-cycle-fixture'
+import { extractPortableProjectArchive } from '../../services/portable-project-archive'
 
 vi.mock('../../utils/remove-directory', async importOriginal => {
   const actual = await importOriginal<typeof import('../../utils/remove-directory')>()
@@ -34,6 +39,7 @@ function busyError(): NodeJS.ErrnoException {
   })
 }
 
+const Sqlite = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3')
 const PROJECT = '11111111-1111-4111-8111-111111111111'
 const TARGET_PROJECT = '22222222-2222-4222-8222-222222222222'
 const ACCOUNT = '33333333-3333-4333-8333-333333333333'
@@ -354,6 +360,97 @@ describe('registerCloudBackupController', () => {
     } finally { project.dispose() }
   })
 
+  it('真实项目有一条坏审修循环：照常上传，上传的存档里没有这条循环，成功结果指明章节（#702）', async () => {
+    const project = await createProjectArchiveRoundtripFixture()
+    try {
+      initProjectDatabase(project.sourceRoot)
+      const items = seedReviewedBook(getProjectDb()!, 2, { firstChapter: 31 })
+      for (const item of items) getProjectDb()!.prepare('UPDATE generation_roots SET budget_json=? WHERE root_action_id=?').run(JSON.stringify({
+        maxPhysicalRequests: 1, maxTokenLiability: 100, maxOutputPerRequest: 100, maxActiveElapsedMs: 1000 }), item.seeded.call.rootActionId)
+      getProjectDb()!.prepare("INSERT INTO blueprints(chapter_number,title) VALUES(32,'沉船') ON CONFLICT(chapter_number) DO UPDATE SET title=excluded.title").run()
+      breakReviewProof(getProjectDb()!, items[1]!)
+      closeProjectDatabase()
+      const projectSession = { ...session, projectPath: project.sourceRoot }
+      const f = fixture({
+        exportPortableProject,
+        portableAssets: createPortableProjectAssetProvider(),
+        assertCurrentProjectContext: vi.fn(() => ({ projectId: PROJECT, leaseId: session.leaseId, rootPath: project.sourceRoot })),
+        getCurrentProjectPath: vi.fn(() => project.sourceRoot),
+      })
+      let uploadedCycles: unknown[] = []
+      vi.mocked(f.deps.webDav.appendGeneration).mockImplementationOnce(async input => {
+        const unpacked = await extractPortableProjectArchive({ archivePath: input.archivePath, stagingParentPath: fs.mkdtempSync(path.join(f.root, 'unpack-')) })
+        const archived = new Sqlite(path.join(unpacked.stagingPath, 'project.db'), { readonly: true })
+        try { uploadedCycles = archived.prepare('SELECT review_id FROM review_cycles ORDER BY review_id').pluck().all() } finally { archived.close() }
+        return generation
+      })
+
+      const result = await f.invoke('cloud-backup:backup', { operationId: OPERATION, projectSession, disclosureConfirmed: true })
+
+      expect(result).toMatchObject({ success: true, state: 'backup-complete', operationId: OPERATION,
+        omittedReviewCycles: [{ chapterNumber: 32, chapterTitle: '沉船', inTrash: false }] })
+      expect(uploadedCycles).toEqual([items[0]!.seeded.reviewId])
+    } finally { closeProjectDatabase(); project.dispose() }
+  })
+
+  it('真实项目有主键为 NULL、又指不出章节的循环：作者看到「有一项数据无法安全打包」，不是错误码（#702）', async () => {
+    const project = await createProjectArchiveRoundtripFixture()
+    try {
+      initProjectDatabase(project.sourceRoot)
+      const db = getProjectDb()!
+      const items = seedReviewedBook(db, 2, { firstChapter: 31 })
+      db.prepare('UPDATE generation_roots SET budget_json=?').run(JSON.stringify({
+        maxPhysicalRequests: 1, maxTokenLiability: 100, maxOutputPerRequest: 100, maxActiveElapsedMs: 1000 }))
+      const cycleId = db.prepare('SELECT cycle_id FROM review_cycles WHERE review_id=?').pluck().get(items[1]!.seeded.reviewId)
+      db.prepare('DELETE FROM review_cycle_merges WHERE cycle_id=?').run(cycleId)
+      db.prepare('DELETE FROM review_findings WHERE cycle_id=?').run(cycleId)
+      db.prepare('UPDATE review_cycles SET cycle_id=NULL WHERE cycle_id=?').run(cycleId)
+      db.prepare('UPDATE reviews SET source_draft_version=source_draft_version+1 WHERE id=?').run(items[1]!.seeded.reviewId)
+      closeProjectDatabase()
+      const f = fixture({
+        exportPortableProject,
+        portableAssets: createPortableProjectAssetProvider(),
+        assertCurrentProjectContext: vi.fn(() => ({ projectId: PROJECT, leaseId: session.leaseId, rootPath: project.sourceRoot })),
+        getCurrentProjectPath: vi.fn(() => project.sourceRoot),
+      })
+
+      const result = await f.invoke('cloud-backup:backup', { operationId: OPERATION,
+        projectSession: { ...session, projectPath: project.sourceRoot }, disclosureConfirmed: true }) as CloudBackupFailure
+
+      expect(result).toMatchObject({ success: false, errorCode: 'CLOUD_BACKUP_ARCHIVE_FAILED' })
+      expect(result.damagedReviewCycle && damagedReviewCycleMessage(shown('zh-CN'), result.damagedReviewCycle))
+        .toBe('作品没有改动。有一项数据无法安全打包，存档没有生成。请把这条提示反馈给我们。')
+      expect(f.deps.webDav.appendGeneration).not.toHaveBeenCalled()
+    } finally { closeProjectDatabase(); project.dispose() }
+  })
+
+  it('真实项目去掉坏循环仍过不了投影、又指不出章节：作者看到「有一项数据无法安全打包」，不是错误码（#702）', async () => {
+    const project = await createProjectArchiveRoundtripFixture()
+    try {
+      initProjectDatabase(project.sourceRoot)
+      const items = seedReviewedBook(getProjectDb()!, 2, { firstChapter: 31 })
+      getProjectDb()!.prepare('UPDATE generation_roots SET budget_json=? WHERE root_action_id=?').run(JSON.stringify({
+        maxPhysicalRequests: 1, maxTokenLiability: 100, maxOutputPerRequest: 100, maxActiveElapsedMs: 1000 }), items[0]!.seeded.call.rootActionId)
+      getProjectDb()!.prepare('UPDATE reviews SET base_draft_id=?, review_index=99 WHERE id=?').run(items[0]!.seeded.draftId, items[1]!.seeded.reviewId)
+      getProjectDb()!.prepare("UPDATE generation_roots SET action_json='{}' WHERE root_action_id=?").run(items[1]!.seeded.call.rootActionId)
+      closeProjectDatabase()
+      const f = fixture({
+        exportPortableProject,
+        portableAssets: createPortableProjectAssetProvider(),
+        assertCurrentProjectContext: vi.fn(() => ({ projectId: PROJECT, leaseId: session.leaseId, rootPath: project.sourceRoot })),
+        getCurrentProjectPath: vi.fn(() => project.sourceRoot),
+      })
+
+      const result = await f.invoke('cloud-backup:backup', { operationId: OPERATION,
+        projectSession: { ...session, projectPath: project.sourceRoot }, disclosureConfirmed: true }) as CloudBackupFailure
+
+      expect(result).toMatchObject({ success: false, errorCode: 'CLOUD_BACKUP_ARCHIVE_FAILED' })
+      expect(result.damagedReviewCycle && damagedReviewCycleMessage(shown('zh-CN'), result.damagedReviewCycle))
+        .toBe('作品没有改动。有一项数据无法安全打包，存档没有生成。请把这条提示反馈给我们。')
+      expect(f.deps.webDav.appendGeneration).not.toHaveBeenCalled()
+    } finally { closeProjectDatabase(); project.dispose() }
+  })
+
   it('restores a backup uploaded before M08 as a current project with its continuity baseline', async () => {
     const f = fixture({ restorePortableProject })
     vi.mocked(f.deps.webDav.downloadGeneration).mockImplementation(async input => {
@@ -513,7 +610,7 @@ describe('registerCloudBackupController', () => {
 
   it('打包时全书审修循环校验失败：错误码不变，带上坏循环所在的章，不上传（#702）', async () => {
     const f = fixture()
-    const damagedReviewCycle = { chapterNumber: 2, chapterTitle: '沉船', location: 'manuscript' as const }
+    const damagedReviewCycle = { chapterNumber: 2, chapterTitle: '沉船', inTrash: false }
     vi.mocked(f.deps.exportPortableProject).mockRejectedValueOnce(
       new SchemaMigrationError('MIGRATION_VERIFICATION_FAILED', damagedReviewCycle))
 
@@ -523,6 +620,46 @@ describe('registerCloudBackupController', () => {
       success: false, state: 'failed', errorCode: 'CLOUD_BACKUP_ARCHIVE_FAILED', operationId: OPERATION, damagedReviewCycle,
     })
     expect(f.deps.webDav.appendGeneration).not.toHaveBeenCalled()
+  })
+
+  it('打包时资料重来一次仍被改：作者看到「备份时资料被改了」和该点的按钮，不是错误码，不上传（#744）', async () => {
+    const f = fixture()
+    vi.mocked(f.deps.exportPortableProject).mockRejectedValueOnce(new ProjectArchiveServiceError('PORTABLE_EXPORT_SOURCE_CHANGED'))
+
+    const result = await f.invoke('cloud-backup:backup', {
+      operationId: OPERATION, projectSession: session, disclosureConfirmed: true,
+    }) as CloudBackupFailure
+
+    expect(result).toMatchObject({ success: false, state: 'failed', errorCode: 'CLOUD_BACKUP_SOURCE_CHANGED' })
+    expect(displayedErrorMessage(shown('zh-CN'), new Error(result.errorCode)))
+      .toBe('作品没有改动。备份时资料被改了，没有上传。请再点「立即云备份」。')
+    expect(f.deps.webDav.appendGeneration).not.toHaveBeenCalled()
+  })
+
+  it('头像文件坏了：作者看到「头像文件损坏了」和该点的按钮，不说资料被改，不上传（#744）', async () => {
+    const f = fixture()
+    vi.mocked(f.deps.exportPortableProject).mockRejectedValueOnce(new ProjectArchiveServiceError('PORTABLE_EXPORT_AVATAR_DAMAGED'))
+
+    const result = await f.invoke('cloud-backup:backup', {
+      operationId: OPERATION, projectSession: session, disclosureConfirmed: true,
+    }) as CloudBackupFailure
+
+    expect(result).toMatchObject({ success: false, state: 'failed', errorCode: 'CLOUD_BACKUP_AVATAR_DAMAGED' })
+    expect(displayedErrorMessage(shown('zh-CN'), new Error(result.errorCode)))
+      .toBe('作品没有改动。有个角色头像文件损坏了，没有上传。请在人物页给头像没显示的角色「选择头像」，再点「立即云备份」。')
+    expect(f.deps.webDav.appendGeneration).not.toHaveBeenCalled()
+  })
+
+  it('打包时有审修循环没放进存档：照常上传，成功结果带上这些循环所在的章（#702）', async () => {
+    const f = fixture()
+    const omittedReviewCycles = [{ chapterNumber: 2, chapterTitle: '沉船', inTrash: false }]
+    const exported = vi.mocked(f.deps.exportPortableProject).getMockImplementation()!
+    vi.mocked(f.deps.exportPortableProject).mockImplementationOnce(async input => ({ ...await exported(input), omittedReviewCycles }))
+
+    await expect(f.invoke('cloud-backup:backup', {
+      operationId: OPERATION, projectSession: session, disclosureConfirmed: true,
+    })).resolves.toMatchObject({ success: true, state: 'backup-complete', operationId: OPERATION, omittedReviewCycles })
+    expect(f.deps.webDav.appendGeneration).toHaveBeenCalledOnce()
   })
 
   it('lists every explicit book generation with resolved main-process credentials', async () => {

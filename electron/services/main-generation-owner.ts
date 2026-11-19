@@ -13,6 +13,7 @@ import { TERMINAL_PROVIDER_FAILURE_CODES, rootBudgetExhausted, tokenLiability } 
 import { DRAFT_RECONCILE_PURPOSE, stripDraftReconciliationBlock, withoutDraftReconciliationArtifacts } from '../../src/shared/draft-reconciliation'
 import { DRAFT_SHORT_OUTLINE_PURPOSE, draftShortOutlineBlock, stripDraftShortOutlineBlock } from '../../src/shared/draft-short-outline'
 import { GenerationRunRepository, UNSEALED_ROOT, textHash, type DurableGenerationRun, type RunBinding, type GenerationExecutionReceipt } from '../repositories/generation-run-repository'
+import { candidateRunIds, runIndexOf } from '../repositories/generation-run-index'
 import { getCurrentProjectPath } from '../database'
 import { ModelExecutionLeaseRegistry, createModelExecutionLeaseReceipt } from './model-execution-lease'
 import { createGenerationRunService, GENERATION_STOPPED, type GenerationRunServiceDependencies } from './generation-run-service'
@@ -368,19 +369,21 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
         activeElapsedMs: budget.activeElapsedMs, blockedCode: budget.blockedCode }, artifacts, candidates,
       unsavedTails: service.readUnsavedTails().filter(tail => budget.attempts.some(attempt => attempt.attemptId === tail.attemptId)) }
   }
-  /** 新的在前；只从库里取身份、状态与操作类型，不解析整份冻结上下文。 */
-  const runSummaries = () => (deps.database.prepare(`SELECT run_id,root_action_id,status,
+  /** 这几种操作的运行，新的在前，略去 skip 里的；只从库里取身份、状态与操作类型，不解析整份冻结上下文。 */
+  const runSummaries = (operations: readonly string[], skip?: ReadonlySet<string>) => (deps.database.prepare(`SELECT run_id,root_action_id,status,
       json_extract(binding_json,'$.projectId','$.epoch','$.sourceManifest.operation','$.sourceManifest.batchId','$.sourceManifest.batchIntent') AS identity
-      FROM generation_runs WHERE root_action_id IN (SELECT root_action_id FROM generation_roots WHERE ${UNSEALED_ROOT})
-      ORDER BY created_at_ms DESC, rowid DESC`).all() as { run_id: string; root_action_id: string; status: MainGenerationRunView['status']; identity: string }[])
+      FROM generation_runs WHERE run_id IN (SELECT value FROM json_each(?)) AND root_action_id IN (SELECT root_action_id FROM generation_roots WHERE ${UNSEALED_ROOT})
+      ORDER BY created_at_ms DESC, rowid DESC`).all(candidateRunIds(runIndexOf(deps.database).lookup(click => operations.includes(click.operation)), skip)) as { run_id: string; root_action_id: string; status: MainGenerationRunView['status']; identity: string }[])
     .map(row => {
       const [projectId, epoch, operation, batchId, batchIntent] = JSON.parse(row.identity) as [string, string, string | null, string | null, unknown]
       return { handle: { projectId, epoch, rootActionId: row.root_action_id, runId: row.run_id }, status: row.status, operation: operation ?? undefined,
         batchId, batchRoot: Boolean(batchIntent) }
-    }).filter(run => run.handle.projectId === deps.projectId)
-  const list = (): MainGenerationRunSummary[] => {
+    }).filter(run => run.handle.projectId === deps.projectId && operations.includes(run.operation ?? ''))
+  const list = (operations: readonly string[]): MainGenerationRunSummary[] => {
     assertCurrent()
-    return runSummaries().map(({ handle, status, operation }) => ({ handle, status, operation }))
+    if (!Array.isArray(operations) || !operations.length || operations.length > 16 || operations.some(operation => typeof operation !== 'string' || !operation))
+      throw new Error('GENERATION_LIST_OPERATIONS_INVALID')
+    return runSummaries(operations).map(({ handle, status, operation }) => ({ handle, status, operation }))
   }
   // S10B：'materialDecision'/'materialDecisionHash' 只在**取得准入之后**才可能出现在真正
   // 运行的 manifest 上（prepare 阶段早于材料装配），因此与 selectedFinalizedDraftIds 同类，
@@ -1119,10 +1122,9 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
         if (planningRecoverable(recovery)) list.planning.push(recovery)
       },
       review: (handle: MainGenerationRunHandle) => {
-        const recovery = readReviewRevisionRecovery(handle), tailed = tailedRuns.has(handle.runId)
-        if (recovery.saved && !tailed) return
+        const recovery = readReviewRevisionRecovery(handle)
         const view = viewOf(requireRun(handle))
-        if (tailed || reviewCanResume(view, recovery) || (view.candidates ?? view.artifacts).some(hasText)) list.reviews.push({ view, recovery })
+        if (tailedRuns.has(handle.runId) || reviewCanResume(view, recovery) || (view.candidates ?? view.artifacts).some(hasText)) list.reviews.push({ view, recovery })
       },
       editor: (handle: MainGenerationRunHandle) => {
         const recovery = readEditorInlineRecovery(handle), outputs = recovery.view.candidates ?? recovery.view.artifacts
@@ -1131,10 +1133,8 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
         if (tailedRuns.has(handle.runId) || !settled && (editorCanContinue(recovery) || outputs.some(hasText))) list.editors.push(recovery)
       },
       draft: (handle: MainGenerationRunHandle) => {
-        const saved = draftEffects.readRecovery(handle.runId).kind !== 'absent'
-        if (saved && !tailedRuns.has(handle.runId)) return
         const view = viewOf(requireRun(handle))
-        if (saved) {
+        if (draftEffects.readRecovery(handle.runId).kind !== 'absent') {
           list.drafts.push({ view, recovery: readContext(handle) })
           return
         }
@@ -1146,8 +1146,11 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
           || view.unsavedTails?.some(hasText)) list.drafts.push({ view, recovery })
       },
     }
-    const runs = runSummaries()
-    for (const run of runs) {
+    // 已保存的审修、写稿不再列出，也不再重证（ADR-0029 决定 1）；这次打开里还有没落盘尾段的照旧列出。
+    const candidates = candidateRunIds(runIndexOf(deps.database).lookup(click => RECOVERY_KIND.has(click.operation)))
+    const saved = deps.database.prepare(`SELECT run_id FROM generation_attempts WHERE run_id IN (SELECT value FROM json_each(?))
+      AND (json_type(usage_receipt_json,'$.reviewRevisionEffect')='object' OR json_type(usage_receipt_json,'$.draftCommit')='object')`).pluck().all(candidates) as string[]
+    for (const run of runSummaries([...RECOVERY_KIND.keys()], new Set(saved.filter(runId => !tailedRuns.has(runId))))) {
       const kind = RECOVERY_KIND.get(run.operation ?? '')
       if (!kind || (kind === 'draft' && run.batchId)) continue
       try {
@@ -1158,7 +1161,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     }
     // 封存的生成不列出，列表因此不全。
     if (repository.hasSealedRoot()) list.partial = true
-    const batchIds = draftEffects.resumableBatchIds(deps.projectId)
+    const batchIds = draftEffects.resumableBatchIds(deps.projectId, candidateRunIds(runIndexOf(deps.database).lookup(click => click.operation === 'batch-chapters')))
     if (!batchIds.length) return list
     const commits = draftEffects.batchCommits()
     for (const batchId of batchIds) {
@@ -1175,7 +1178,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
    */
   const findBlueprintRecovery = (): GenerationRecoveryContext | null => {
     assertCurrent()
-    for (const run of runSummaries().filter(item => item.operation === 'chapter-blueprint-directory')) {
+    for (const run of runSummaries(['chapter-blueprint-directory'])) {
       let recovery: GenerationRecoveryContext
       try { recovery = readContext(run.handle) } catch { continue }
       if (recovery.blueprintRecovery && recovery.blueprintRecovery.writeState !== 'complete' && planningRecoverable(recovery)) return recovery
@@ -1705,7 +1708,7 @@ export function createMainGenerationOwner(deps: MainGenerationOwnerDependencies)
     listBatches: () => {
       assertCurrent()
       const commits = draftEffects.batchCommits()
-      return runSummaries().filter(run => run.batchRoot).map(run => draftEffects.readBatchHistory(run.handle.runId, deps.projectId, commits))
+      return runSummaries(['batch-chapters']).filter(run => run.batchRoot).map(run => draftEffects.readBatchHistory(run.handle.runId, deps.projectId, commits))
     },
     confirmBatchFinalization: (request: { batchId: string; chapterNumber: number; finalizationId: string }) => {
       const batch = readBatch(request.batchId)

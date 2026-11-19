@@ -65,6 +65,8 @@ export type CloudBackupErrorCode =
   | 'CLOUD_BACKUP_NETWORK_FAILED'
   | 'CLOUD_BACKUP_REMOTE_INVALID'
   | 'CLOUD_BACKUP_ARCHIVE_FAILED'
+  | 'CLOUD_BACKUP_SOURCE_CHANGED'
+  | 'CLOUD_BACKUP_AVATAR_DAMAGED'
   | 'CLOUD_BACKUP_RESTORE_FAILED'
   | 'CLOUD_BACKUP_LOCAL_STATE_NOT_SAVED'
   | 'CLOUD_BACKUP_CANCELLED'
@@ -153,6 +155,8 @@ export interface CloudBackupChannels {
       backupPoint: string
       bindingSaved: boolean
       binding: CloudBackupBindingView | null
+      /** 验不过、没放进这次备份的审修循环所在的章。 */
+      omittedReviewCycles?: readonly DamagedReviewCycle[]
     } | CloudBackupFailure
   }
   'cloud-backup:list': {
