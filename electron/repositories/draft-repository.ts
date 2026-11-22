@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { getProjectDb } from '../database'
 import { ContentRepository } from './content-repository'
+import { GenerationRunRepository } from './generation-run-repository'
 import { nextDraftVersion } from './draft-version'
 import type { DraftSourceDependency } from '../../src/shared/draft-source-dependency'
 import type { DraftSource } from '../../src/shared/draft-source'
@@ -371,13 +372,11 @@ export class DraftRepository {
                   WHERE chapter_number = ? AND status IN ('draft', 'reviewed', 'revised', 'finalized')
                   LIMIT 1
                 `).get(params.chapterNumber)
-                const generating = db.prepare(`
-                  SELECT 1 FROM generation_runs
-                  WHERE status IN ('running', 'paused')
-                    AND json_extract(binding_json, '$.sourceManifest.operation') = 'chapter-draft'
-                    AND json_extract(binding_json, '$.sourceManifest.chapterNumber') = ?
-                  LIMIT 1
-                `).get(params.chapterNumber)
+                const generating = new GenerationRunRepository(() => db).recognizedRuns(
+                    click => click.operation === 'chapter-draft',
+                    binding => binding.sourceManifest.operation === 'chapter-draft',
+                ).some(run => (run.status === 'running' || run.status === 'paused')
+                    && run.binding.sourceManifest.chapterNumber === params.chapterNumber)
                 if (existing || generating) throw new Error('DRAFT_AUTHOR_CREATE_CONFLICT')
             }
             const serializedDependencies = JSON.stringify(params.sourceDependencies ?? [])
