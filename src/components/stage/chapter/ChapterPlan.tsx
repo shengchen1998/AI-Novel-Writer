@@ -8,7 +8,8 @@ import { useStageStore } from '../../../stores/navigation/stage-store'
 import { openBuiltinEditor } from '../../../stores/open-builtin-editor'
 import { useProjectStore } from '../../../stores/project-store'
 import { ipc } from '../../../services/ipc-client'
-import { displayedErrorMessage } from '../../../i18n/app-errors'
+import { caughtFailure, failureText } from '../../../i18n/app-errors'
+import { note } from '../../../shared/failure'
 import { captureProjectSession, isProjectSessionCurrent } from '../../project-session-gate'
 import { Button } from '../../ui/Button'
 import { Notice } from '../../ui/Notice'
@@ -69,7 +70,7 @@ export default function ChapterPlan({ tab, chapterNumber, projectKey }: { tab: E
       if (!draft) throw new Error(text('创建后没能读到作者草稿，请重新打开本章', 'The author draft was created but could not be read. Reopen this chapter.'))
       await swapChapterTab(tab.id, () => openDraftInChapterView(draft, row?.title ?? '', session))
     } catch (error) {
-      toast.error(displayedErrorMessage(currentInterfaceLocale(), error, text('创建作者草稿失败', 'Could not create the author draft')))
+      toast.error(failureText(currentInterfaceLocale(), caughtFailure(error), { fallback: note('创建作者草稿失败', 'Could not create the author draft') }))
     } finally {
       creatingAuthorDraftRef.current = false
       setCreatingAuthorDraft(false)

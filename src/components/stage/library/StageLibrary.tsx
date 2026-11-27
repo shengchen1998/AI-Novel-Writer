@@ -21,7 +21,8 @@ import { shelfTime } from './shelf-format'
 import { barsFromOverview, barsFromStages, nextStep } from './shelf-progress'
 import { useShelfOverview, type ShelfBook as Book } from './use-shelf-overview'
 import { pluralEn } from '../../../shared/plural-en'
-import { displayedErrorMessage } from '../../../i18n/app-errors'
+import { caughtFailure, failureText, resultFailure } from '../../../i18n/app-errors'
+import { note } from '../../../shared/failure'
 import { alertError } from '../../ui/AlertDialog'
 
 type Text = (zh: string, en: string) => string
@@ -34,13 +35,13 @@ async function openProjectFolder(): Promise<void> {
 async function openBookFolder(book: Book): Promise<void> {
   const { text } = useLocaleStore.getState()
   const title = text('无法打开作品文件夹', 'Could not open the book folder')
-  const fallback = text('无法打开作品文件夹，请重试。', 'The book folder could not be opened. Try again.')
+  const fallback = note('无法打开作品文件夹，请重试。', 'The book folder could not be opened. Try again.')
   try {
     const result = await ipc.invoke('project:open-folder', book.path)
     if (result.success) return
-    await alertError(displayedErrorMessage(currentInterfaceLocale(), result.error, fallback), { title })
+    await alertError(failureText(currentInterfaceLocale(), resultFailure(result), { fallback }), { title })
   } catch (error) {
-    await alertError(displayedErrorMessage(currentInterfaceLocale(), error, fallback), { title })
+    await alertError(failureText(currentInterfaceLocale(), caughtFailure(error), { fallback }), { title })
   }
 }
 
